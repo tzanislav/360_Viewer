@@ -1,43 +1,54 @@
-import {  ReactPhotoSphereViewer} from "react-photo-sphere-viewer";
+import { ReactPhotoSphereViewer } from "react-photo-sphere-viewer";
+import { CompassPlugin } from "@photo-sphere-viewer/compass-plugin";
+import { MarkersPlugin } from "@photo-sphere-viewer/markers-plugin";
+import '@photo-sphere-viewer/compass-plugin/index.css';
+import '@photo-sphere-viewer/markers-plugin/index.css';
 import React from "react";
-import "../CSS/styles.css";
 
 function Panoviewer() {
+  const handleReady = (instance) => {
+    const markersPlugin = instance.getPlugin(MarkersPlugin);
+    if (!markersPlugin) {
+      console.warn('MarkersPlugin not available on viewer instance');
+      return;
+    }
 
-    console.log("Panoviewer component rendered");
-  const handleClick = (data) => {
-    console.log("Clicked on panorama:", data);
-  };
-
-  console.log("Setting up error handler");
-
-  const handleError = (error) => {
-    console.error("PhotoSphere Error:", error);
-    console.error("Error details:", {
-      message: error?.message,
-      type: error?.type,
-      target: error?.target,
-      stack: error?.stack
+    markersPlugin.addEventListener('select-marker', (event) => {
+      const markerId = event?.marker?.id ?? 'unknown';
+      console.log(`Marker clicked: ${markerId}`);
     });
   };
 
-  console.log("Setting up ready handler");
+  const plugins = [
+    [
+      CompassPlugin,
+      {
 
-  const handleReady = () => {
-    console.log("PhotoSphere viewer is ready");
-  };
-
-  console.log("Rendering ReactPhotoSphereViewer component");
+      },
+    ],
+    [
+      MarkersPlugin,
+      {
+        markers: [
+          {
+            id: "imageLayer2",
+            image: "drone.png",
+            size: { width: 64, height: 64 },
+            position: { yaw: "130.5deg", pitch: "-0.1deg" },
+            tooltip: "Image embedded in the scene",
+          },
+        ],
+      },
+    ],
+  ];
 
   return (
     <div className="App">
       <ReactPhotoSphereViewer
-        src="https://static.vecteezy.com/system/resources/previews/010/387/128/large_2x/empty-white-room-without-furniture-full-spherical-hdri-panorama-360-degrees-in-interior-room-in-modern-apartments-office-or-clinic-in-equirectangular-projection-photo.jpg"
+        src="testPanorama.jpg"
+        plugins={plugins}
         height={"100vh"}
         width={"100%"}
-        littlePlanet={false}
-        onClick={handleClick}
-        onError={handleError}
         onReady={handleReady}
       ></ReactPhotoSphereViewer>
     </div>
