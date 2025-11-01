@@ -332,6 +332,20 @@
   background: #1d4ed8;
 }
 
+.project-card-delete-button {
+  background: #dc2626;
+}
+
+.project-card-delete-button:hover {
+  background: #b91c1c;
+}
+
+.project-card-delete-button:disabled,
+.project-card-delete-button:disabled:hover {
+  background: #fca5a5;
+  cursor: not-allowed;
+}
+
 .project-form {
   display: flex;
   flex-direction: column;
@@ -636,6 +650,23 @@
   cursor: crosshair;
 }
 
+.project-canvas.has-background {
+  background: #0f172a;
+}
+
+.project-canvas-background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  z-index: 0;
+  pointer-events: none;
+}
+
 .project-canvas-links {
   position: absolute;
   top: 0;
@@ -643,7 +674,7 @@
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 0;
+  z-index: 1;
 }
 
 .project-canvas-link-line {
@@ -662,7 +693,7 @@
   pointer-events: auto;
   cursor: grab;
   text-align: center;
-  z-index: 1;
+  z-index: 2;
   touch-action: none;
 }
 
@@ -738,6 +769,100 @@
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.project-background-panel {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.project-background-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.project-background-form input[type="file"] {
+  padding: 8px 12px;
+  border: 1px dashed #93c5fd;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.project-background-form button {
+  align-self: flex-start;
+  padding: 10px 16px;
+  background-color: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background-color 0.2s ease;
+}
+
+.project-background-form button:disabled {
+  background-color: #93c5fd;
+  cursor: not-allowed;
+}
+
+.project-background-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.project-background-actions button {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  background-color: #334155;
+  color: #f9fafb;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.project-background-actions button:disabled {
+  background-color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.project-background-actions button:not(:disabled):hover {
+  background-color: #1f2937;
+}
+
+.project-background-actions button:last-child {
+  background-color: #dc2626;
+}
+
+.project-background-actions button:last-child:not(:disabled):hover {
+  background-color: #b91c1c;
+}
+
+.project-background-preview {
+  width: 100%;
+  padding-top: 56.25%;
+  border-radius: 8px;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.project-canvas-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: #1f2937;
+}
+
+.project-canvas-toggle input {
+  accent-color: #2563eb;
 }
 
 .project-start-button,

@@ -7,6 +7,7 @@ function Projects() {
   const [projects, setProjects] = useState([]);
   const [statusMessage, setStatusMessage] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deletingProjectIds, setDeletingProjectIds] = useState([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [formState, setFormState] = useState({ name: '', description: '' });
   const navigate = useNavigate();
@@ -105,6 +106,44 @@ function Projects() {
     }
   };
 
+  const handleDeleteProject = useCallback(
+    async (projectId) => {
+      if (deletingProjectIds.includes(projectId)) {
+        return;
+      }
+
+      if (!window.confirm('Delete this project? This cannot be undone.')) {
+        return;
+      }
+
+      setDeletingProjectIds((prev) => [...prev, projectId]);
+      setStatusMessage(null);
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/projects/${projectId}`, {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          const errorBody = await response
+            .json()
+            .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+          throw new Error(errorBody.message || 'Failed to delete project');
+        }
+
+        const payload = await response.json().catch(() => ({}));
+        setStatusMessage({ type: 'success', message: payload.message || 'Project deleted.' });
+        await loadProjects();
+      } catch (error) {
+        setStatusMessage({ type: 'error', message: error.message });
+      } finally {
+        setDeletingProjectIds((prev) => prev.filter((id) => id !== projectId));
+      }
+    },
+    [apiBaseUrl, deletingProjectIds, loadProjects]
+  );
+
   return (
     <div className="projects-page">
       <header className="projects-header">
@@ -167,6 +206,14 @@ function Projects() {
                     Activate &amp; Open
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="project-card-delete-button"
+                  onClick={() => handleDeleteProject(project._id)}
+                  disabled={deletingProjectIds.includes(project._id)}
+                >
+                  {deletingProjectIds.includes(project._id) ? 'Deleting…' : 'Delete Project'}
+                </button>
               </div>
             </div>
           ))

@@ -57,6 +57,11 @@ function ProjectEditor() {
     hasMoved: false,
   });
   const suppressClickRef = useRef(false);
+  const [backgroundFile, setBackgroundFile] = useState(null);
+  const [isBackgroundUploading, setIsBackgroundUploading] = useState(false);
+  const [isBackgroundVisible, setIsBackgroundVisible] = useState(false);
+  const [showCanvasLabels, setShowCanvasLabels] = useState(true);
+  const backgroundInputRef = useRef(null);
 
   const selectedPhoto = useMemo(
     () => photos.find((photo) => photo._id === selectedPhotoId),
@@ -145,6 +150,8 @@ function ProjectEditor() {
   }, [photos, resolvedStartPhotoId, fallbackStartPhoto]);
 
   const isSelectedStoredStart = Boolean(selectedPhotoId && startPhotoId && selectedPhotoId === startPhotoId);
+  const hasBackgroundImage = Boolean(activeProject?.canvasBackgroundImageUrl);
+  const shouldShowBackground = hasBackgroundImage && isBackgroundVisible;
 
   const loadActiveProject = useCallback(async () => {
     try {
@@ -201,6 +208,14 @@ function ProjectEditor() {
     const normalizedStartId = normalizeId(activeProject?.startPanophoto);
     setStartPhotoId(normalizedStartId || null);
   }, [activeProject]);
+
+  useEffect(() => {
+    if (backgroundInputRef.current) {
+      backgroundInputRef.current.value = '';
+    }
+    setBackgroundFile(null);
+    setIsBackgroundVisible(Boolean(activeProject?.canvasBackgroundImageUrl));
+  }, [activeProject?.canvasBackgroundImageUrl]);
 
   useEffect(() => {
     if (activeProject?._id) {
@@ -269,6 +284,60 @@ function ProjectEditor() {
     }
   };
 
+  const handleBackgroundFileChange = useCallback((event) => {
+    const file = event.target?.files && event.target.files[0] ? event.target.files[0] : null;
+    setBackgroundFile(file);
+    setStatusMessage(null);
+  }, [setBackgroundFile, setStatusMessage]);
+
+  const handleBackgroundUpload = useCallback(async (event) => {
+    event.preventDefault();
+
+    if (!activeProject?._id) {
+      setStatusMessage({ type: 'error', message: 'Create or activate a project before uploading a background.' });
+      return;
+    }
+
+    if (!backgroundFile) {
+      setStatusMessage({ type: 'error', message: 'Select an image to upload as the canvas background.' });
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('background', backgroundFile);
+
+    setIsBackgroundUploading(true);
+    setStatusMessage(null);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/projects/${activeProject._id}/background`, {
+        method: 'PATCH',
+        credentials: 'include',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to upload canvas background');
+      }
+
+      const payload = await response.json();
+      setActiveProject(payload.project);
+      setIsBackgroundVisible(true);
+      setStatusMessage({ type: 'success', message: 'Canvas background updated.' });
+      setBackgroundFile(null);
+      if (backgroundInputRef.current) {
+        backgroundInputRef.current.value = '';
+      }
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    } finally {
+      setIsBackgroundUploading(false);
+    }
+  }, [activeProject, apiBaseUrl, backgroundFile, setActiveProject, setIsBackgroundVisible, setStatusMessage]);
+
   const mergeUpdatedPhotos = useCallback((updatedList) => {
     if (!Array.isArray(updatedList) || updatedList.length === 0) {
       return;
@@ -279,6 +348,70 @@ function ProjectEditor() {
       return prev.map((photo) => (updateMap.has(photo._id) ? { ...photo, ...updateMap.get(photo._id) } : photo));
     });
   }, []);
+
+  const handleDeleteBackground = useCallback(async () => {
+    if (!activeProject?._id) {
+      return;
+    }
+
+    if (!hasBackgroundImage) {
+      setStatusMessage({ type: 'info', message: 'No background image to remove.' });
+      return;
+    }
+
+    if (!window.confirm('Remove the canvas background image?')) {
+      return;
+    }
+
+    setIsBackgroundUploading(true);
+    setStatusMessage(null);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/projects/${activeProject._id}/background`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to remove canvas background');
+      }
+
+      const payload = await response.json();
+      setActiveProject(payload.project);
+      setIsBackgroundVisible(false);
+      setBackgroundFile(null);
+      if (backgroundInputRef.current) {
+        backgroundInputRef.current.value = '';
+      }
+      setStatusMessage({ type: 'success', message: 'Canvas background removed.' });
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    } finally {
+      setIsBackgroundUploading(false);
+    }
+  }, [activeProject, apiBaseUrl, hasBackgroundImage, setActiveProject, setBackgroundFile, setIsBackgroundVisible, setStatusMessage]);
+
+  const handleToggleBackgroundVisibility = useCallback(() => {
+    if (!hasBackgroundImage) {
+      return;
+    }
+
+    setIsBackgroundVisible((prev) => {
+      const next = !prev;
+      setStatusMessage({
+        type: 'info',
+        message: next ? 'Canvas background shown.' : 'Canvas background hidden.',
+      });
+      return next;
+    });
+  }, [hasBackgroundImage, setIsBackgroundVisible, setStatusMessage]);
+
+  const handleToggleCanvasLabels = useCallback((event) => {
+    setShowCanvasLabels(event.target.checked);
+  }, [setShowCanvasLabels]);
 
   const persistPhotoPosition = useCallback(
     async (photoId, xPosition, yPosition, fallbackPosition) => {
@@ -813,6 +946,44 @@ function ProjectEditor() {
               {isUploading ? 'Uploading…' : 'Upload Photos'}
             </button>
           </form>
+          <div className="project-background-panel">
+            <h3>Canvas Background</h3>
+            {hasBackgroundImage ? (
+              <div
+                className="project-background-preview"
+                style={{ backgroundImage: `url(${activeProject.canvasBackgroundImageUrl})` }}
+              />
+            ) : (
+              <p className="canvas-helper-text">No background image uploaded yet.</p>
+            )}
+            <form className="project-background-form" onSubmit={handleBackgroundUpload}>
+              <input
+                ref={backgroundInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleBackgroundFileChange}
+              />
+              <button type="submit" disabled={!backgroundFile || isBackgroundUploading}>
+                {isBackgroundUploading ? 'Uploading…' : 'Upload Background'}
+              </button>
+            </form>
+            <div className="project-background-actions">
+              <button
+                type="button"
+                onClick={handleToggleBackgroundVisibility}
+                disabled={!hasBackgroundImage || isBackgroundUploading}
+              >
+                {shouldShowBackground ? 'Hide Background' : 'Show Background'}
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteBackground}
+                disabled={!hasBackgroundImage || isBackgroundUploading}
+              >
+                Delete Background
+              </button>
+            </div>
+          </div>
         </section>
 
         <div className="project-editor-body">
@@ -845,7 +1016,16 @@ function ProjectEditor() {
           </aside>
 
           <div className="project-canvas-wrapper">
-            <div ref={canvasRef} className="project-canvas">
+            <div
+              ref={canvasRef}
+              className={`project-canvas${shouldShowBackground ? ' has-background' : ''}`}
+            >
+              {shouldShowBackground ? (
+                <div
+                  className="project-canvas-background"
+                  style={{ backgroundImage: `url(${activeProject.canvasBackgroundImageUrl})` }}
+                />
+              ) : null}
               <svg className="project-canvas-links" viewBox="0 0 100 100" preserveAspectRatio="none">
                 {linkLines.map((segment) => (
                   <line
@@ -868,6 +1048,7 @@ function ProjectEditor() {
                   isLinkSource={linkSourceId === photo._id}
                   isStart={photo._id === resolvedStartPhotoId}
                   isDragging={draggingPhotoId === photo._id}
+                  showLabel={showCanvasLabels}
                   onClick={(event) => handleMarkerClick(event, photo._id)}
                   onDragStart={(event) => handleMarkerDragStart(event, photo._id)}
                   onDrag={(event) => handleMarkerDrag(event, photo._id)}
@@ -893,6 +1074,14 @@ function ProjectEditor() {
               >
                 {isSelectedStoredStart ? 'Start Scene' : 'Set as Start'}
               </button>
+              <label className="project-canvas-toggle">
+                <input
+                  type="checkbox"
+                  checked={showCanvasLabels}
+                  onChange={handleToggleCanvasLabels}
+                />
+                Show photo names
+              </label>
               {linkSourceId && linkingSourcePhoto ? (
                 <span className="project-link-hint">
                   Select another photo to link with "{linkingSourcePhoto.name}".

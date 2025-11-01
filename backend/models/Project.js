@@ -26,6 +26,16 @@ const projectSchema = new mongoose.Schema(
         ref: 'Panophoto',
       },
     ],
+    canvasBackgroundImageUrl: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+    canvasBackgroundImageS3Key: {
+      type: String,
+      trim: true,
+      default: null,
+    },
   },
   {
     timestamps: true,

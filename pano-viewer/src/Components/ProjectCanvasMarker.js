@@ -9,6 +9,7 @@ function ProjectCanvasMarker({
   isLinkSource = false,
   isStart = false,
   isDragging = false,
+  showLabel = true,
   onClick,
   onDragStart,
   onDrag,
@@ -113,7 +114,7 @@ function ProjectCanvasMarker({
     >
       {isStart ? <span className="project-canvas-start-badge">Start</span> : null}
       <div className="project-canvas-dot" />
-      <span className="project-canvas-label">{name}</span>
+      {showLabel ? <span className="project-canvas-label">{name}</span> : null}
     </div>
   );
 }
