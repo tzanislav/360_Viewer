@@ -1,20 +1,38 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import '../CSS/styles.css';
 
 function UploadTest() {
-  const [formState, setFormState] = useState({
-    name: '',
-    project: '',
-    xPosition: '',
-    yPosition: '',
-  });
+  const [name, setName] = useState('');
   const [file, setFile] = useState(null);
   const [status, setStatus] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeProject, setActiveProject] = useState(null);
+  const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
+
+  useEffect(() => {
+    async function loadActiveProject() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/projects/active`, {
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          return setActiveProject(null);
+        }
+
+        const payload = await response.json();
+        setActiveProject(payload.project);
+      } catch (error) {
+        console.error('Failed to fetch active project:', error);
+        setActiveProject(null);
+      }
+    }
+
+    loadActiveProject();
+  }, [apiBaseUrl]);
 
   const handleChange = (event) => {
-    const { name, value } = event.target;
-    setFormState((prev) => ({ ...prev, [name]: value }));
+    setName(event.target.value);
   };
 
   const handleFileChange = (event) => {
@@ -29,16 +47,17 @@ function UploadTest() {
       return;
     }
 
+    if (!activeProject) {
+      setStatus({ type: 'error', message: 'Create or activate a project before uploading images.' });
+      return;
+    }
+
     setIsSubmitting(true);
     setStatus(null);
 
-    const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
     const formData = new FormData();
 
-    formData.append('name', formState.name);
-    formData.append('project', formState.project);
-    formData.append('xPosition', formState.xPosition);
-    formData.append('yPosition', formState.yPosition);
+    formData.append('name', name);
     formData.append('image', file);
 
     try {
@@ -62,7 +81,7 @@ function UploadTest() {
 
       const payload = await response.json();
       setStatus({ type: 'success', message: `Upload successful. Stored id: ${payload?.panophoto?._id ?? 'unknown'}` });
-      setFormState({ name: '', project: '', xPosition: '', yPosition: '' });
+      setName('');
       setFile(null);
       event.target.reset();
     } catch (error) {
@@ -81,44 +100,9 @@ function UploadTest() {
           <input
             type="text"
             name="name"
-            value={formState.name}
+            value={name}
             onChange={handleChange}
             required
-          />
-        </label>
-
-        <label>
-          Project
-          <input
-            type="text"
-            name="project"
-            value={formState.project}
-            onChange={handleChange}
-            required
-          />
-        </label>
-
-        <label>
-          X Position
-          <input
-            type="number"
-            name="xPosition"
-            value={formState.xPosition}
-            onChange={handleChange}
-            required
-            step="any"
-          />
-        </label>
-
-        <label>
-          Y Position
-          <input
-            type="number"
-            name="yPosition"
-            value={formState.yPosition}
-            onChange={handleChange}
-            required
-            step="any"
           />
         </label>
 
@@ -131,6 +115,12 @@ function UploadTest() {
           {isSubmitting ? 'Uploading…' : 'Upload'}
         </button>
       </form>
+
+      {activeProject ? (
+        <p className="upload-status">Active project: {activeProject.name}</p>
+      ) : (
+        <p className="upload-status error">No active project selected.</p>
+      )}
 
       {status && (
         <p className={`upload-status ${status.type}`}>{status.message}</p>

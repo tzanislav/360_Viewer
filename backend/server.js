@@ -6,6 +6,7 @@ const path = require('path');
 const mongoose = require('mongoose');
 const TestRecord = require('./models/TestRecord');
 const panophotoRoutes = require('./routes/panophotos');
+const projectRoutes = require('./routes/projects');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -59,6 +60,7 @@ app.get('/api/test', async (req, res) => {
 
 // API routes placeholder
 app.use('/api/panophotos', panophotoRoutes);
+app.use('/api/projects', projectRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ message: 'API endpoint not found' });

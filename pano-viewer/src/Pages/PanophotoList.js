@@ -9,6 +9,13 @@ function PanophotoList() {
   const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
   const navigate = useNavigate();
 
+  const formatCoordinate = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value.toFixed(2);
+    }
+    return value ?? 0;
+  };
+
   const loadPanophotos = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -96,9 +103,9 @@ function PanophotoList() {
                 )}
                 <div className="panophoto-item-info">
                   <h2>{panophoto.name}</h2>
-                  <p>Project: {panophoto.project}</p>
+                  <p>Project: {panophoto.project?.name ?? 'Unassigned'}</p>
                   <p>
-                    Position: ({panophoto.xPosition}, {panophoto.yPosition})
+                    Position: ({formatCoordinate(panophoto.xPosition)}, {formatCoordinate(panophoto.yPosition)})
                   </p>
                   <a href={panophoto.imageUrl} target="_blank" rel="noreferrer">
                     View Image

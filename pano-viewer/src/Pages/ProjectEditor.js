@@ -1,0 +1,632 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import ProjectCanvasMarker from '../Components/ProjectCanvasMarker';
+import ProjectPhotoThumbnail from '../Components/ProjectPhotoThumbnail';
+import '../CSS/styles.css';
+
+const normalizeId = (value) => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (!value) {
+    return '';
+  }
+
+  if (typeof value === 'object' && value._id) {
+    return value._id.toString();
+  }
+
+  return value.toString();
+};
+
+function ProjectEditor() {
+  const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
+  const [activeProject, setActiveProject] = useState(null);
+  const [photos, setPhotos] = useState([]);
+  const [selectedPhotoId, setSelectedPhotoId] = useState(null);
+  const [statusMessage, setStatusMessage] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadFiles, setUploadFiles] = useState([]);
+  const [linkSourceId, setLinkSourceId] = useState(null);
+  const [isLinkPending, setIsLinkPending] = useState(false);
+  const [deletingPhotoIds, setDeletingPhotoIds] = useState([]);
+  const canvasRef = useRef(null);
+
+  const selectedPhoto = useMemo(
+    () => photos.find((photo) => photo._id === selectedPhotoId),
+    [photos, selectedPhotoId]
+  );
+
+  const linkingSourcePhoto = useMemo(
+    () => photos.find((photo) => photo._id === linkSourceId),
+    [photos, linkSourceId]
+  );
+
+  const linkLines = useMemo(() => {
+    const segments = [];
+    const seenPairs = new Set();
+
+    photos.forEach((photo) => {
+      if (!Array.isArray(photo.linkedPhotos) || photo.linkedPhotos.length === 0) {
+        return;
+      }
+
+      photo.linkedPhotos.forEach((linkedRef) => {
+        const linkedId = normalizeId(linkedRef);
+
+        if (!linkedId) {
+          return;
+        }
+
+        const partner = photos.find((candidate) => candidate._id === linkedId);
+
+        if (!partner) {
+          return;
+        }
+
+        const key = [photo._id, partner._id].sort().join('::');
+
+        if (seenPairs.has(key)) {
+          return;
+        }
+
+        seenPairs.add(key);
+        segments.push({
+          id: key,
+          x1: (photo.xPosition ?? 0) * 100,
+          y1: (photo.yPosition ?? 0) * 100,
+          x2: (partner.xPosition ?? 0) * 100,
+          y2: (partner.yPosition ?? 0) * 100,
+        });
+      });
+    });
+
+    return segments;
+  }, [photos]);
+
+  const loadActiveProject = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/projects/active`, { credentials: 'include' });
+
+      if (!response.ok) {
+        setActiveProject(null);
+        return;
+      }
+
+      const payload = await response.json();
+      setActiveProject(payload.project);
+    } catch (error) {
+      console.error('Failed to fetch active project:', error);
+      setActiveProject(null);
+    }
+  }, [apiBaseUrl]);
+
+  const loadPhotos = useCallback(
+    async (projectId) => {
+      if (!projectId) {
+        setPhotos([]);
+        return;
+      }
+
+      try {
+        const query = new URLSearchParams({ projectId }).toString();
+        const response = await fetch(`${apiBaseUrl}/api/panophotos?${query}`, {
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to load project panophotos');
+        }
+
+        const payload = await response.json();
+        setPhotos(payload.panophotos || []);
+      } catch (error) {
+        console.error('Failed to load project panophotos:', error);
+        setPhotos([]);
+      }
+    },
+    [apiBaseUrl]
+  );
+
+  useEffect(() => {
+    loadActiveProject();
+  }, [loadActiveProject]);
+
+  useEffect(() => {
+    if (activeProject?._id) {
+      loadPhotos(activeProject._id);
+    } else {
+      setPhotos([]);
+    }
+    setSelectedPhotoId(null);
+    setLinkSourceId(null);
+    setDeletingPhotoIds([]);
+  }, [activeProject, loadPhotos]);
+
+  useEffect(() => {
+    if (!selectedPhotoId) {
+      setLinkSourceId(null);
+    }
+  }, [selectedPhotoId]);
+
+  const handleFileChange = (event) => {
+    setUploadFiles(Array.from(event.target.files || []));
+  };
+
+  const handleUpload = async (event) => {
+    event.preventDefault();
+
+    if (!activeProject) {
+      setStatusMessage({ type: 'error', message: 'Create or activate a project before uploading.' });
+      return;
+    }
+
+    if (uploadFiles.length === 0) {
+      setStatusMessage({ type: 'error', message: 'Select at least one image to upload.' });
+      return;
+    }
+
+    setIsUploading(true);
+    setStatusMessage(null);
+
+    const formData = new FormData();
+    uploadFiles.forEach((file) => formData.append('images', file));
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/panophotos`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to upload pano photos');
+      }
+
+      const payload = await response.json();
+      setPhotos((prev) => [...payload.panophotos, ...prev]);
+      setUploadFiles([]);
+      event.target.reset();
+      setStatusMessage({ type: 'success', message: `Uploaded ${payload.panophotos.length} photo(s).` });
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const mergeUpdatedPhotos = useCallback((updatedList) => {
+    if (!Array.isArray(updatedList) || updatedList.length === 0) {
+      return;
+    }
+
+    setPhotos((prev) => {
+      const updateMap = new Map(updatedList.map((photo) => [photo._id, photo]));
+      return prev.map((photo) => (updateMap.has(photo._id) ? { ...photo, ...updateMap.get(photo._id) } : photo));
+    });
+  }, []);
+
+  const createLinkBetweenPhotos = useCallback(
+    async (sourceId, targetId) => {
+      setIsLinkPending(true);
+
+      const sourceLabel = photos.find((photo) => photo._id === sourceId)?.name || 'Photo';
+      const targetLabel = photos.find((photo) => photo._id === targetId)?.name || 'Photo';
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/panophotos/${sourceId}/link`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ targetId }),
+        });
+
+        if (!response.ok) {
+          const errorBody = await response
+            .json()
+            .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+          throw new Error(errorBody.message || 'Failed to create link');
+        }
+
+        const payload = await response.json();
+        mergeUpdatedPhotos(payload.panophotos || []);
+        setLinkSourceId(null);
+        setSelectedPhotoId(targetId);
+        setStatusMessage({
+          type: 'success',
+          message: `Linked "${sourceLabel}" with "${targetLabel}".`,
+        });
+      } catch (error) {
+        setStatusMessage({ type: 'error', message: error.message });
+      } finally {
+        setIsLinkPending(false);
+      }
+    },
+    [apiBaseUrl, mergeUpdatedPhotos, photos]
+  );
+
+  const handlePhotoSelect = useCallback(
+    (photoId) => {
+      if (isLinkPending || deletingPhotoIds.includes(photoId)) {
+        return;
+      }
+
+      if (linkSourceId) {
+        if (photoId === linkSourceId) {
+          setLinkSourceId(null);
+          setStatusMessage({ type: 'info', message: 'Linking cancelled.' });
+          return;
+        }
+
+        createLinkBetweenPhotos(linkSourceId, photoId);
+        return;
+      }
+
+      setSelectedPhotoId(photoId);
+      setStatusMessage(null);
+    },
+    [createLinkBetweenPhotos, deletingPhotoIds, isLinkPending, linkSourceId]
+  );
+  const handleDeletePhoto = useCallback(
+    async (photoId) => {
+      const targetPhoto = photos.find((photo) => photo._id === photoId);
+      const label = targetPhoto?.name || 'this photo';
+
+      if (!window.confirm(`Delete "${label}" from this project? This cannot be undone.`)) {
+        return;
+      }
+
+      setDeletingPhotoIds((prev) => (prev.includes(photoId) ? prev : [...prev, photoId]));
+      setStatusMessage(null);
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/panophotos/${photoId}`, {
+          method: 'DELETE',
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          const errorBody = await response
+            .json()
+            .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+          throw new Error(errorBody.message || 'Failed to delete photo');
+        }
+
+        setPhotos((prev) =>
+          prev
+            .map((photo) => {
+              if (!Array.isArray(photo.linkedPhotos) || photo.linkedPhotos.length === 0) {
+                return photo;
+              }
+
+              const updatedLinks = photo.linkedPhotos.filter(
+                (linked) => normalizeId(linked) !== photoId
+              );
+
+              if (updatedLinks.length === photo.linkedPhotos.length) {
+                return photo;
+              }
+
+              return { ...photo, linkedPhotos: updatedLinks };
+            })
+            .filter((photo) => photo._id !== photoId)
+        );
+
+        if (selectedPhotoId === photoId) {
+          setSelectedPhotoId(null);
+        }
+
+        if (linkSourceId === photoId) {
+          setLinkSourceId(null);
+        }
+
+        setStatusMessage({ type: 'success', message: `Deleted "${label}".` });
+      } catch (error) {
+        setStatusMessage({ type: 'error', message: error.message });
+      } finally {
+        setDeletingPhotoIds((prev) => prev.filter((id) => id !== photoId));
+      }
+    },
+    [apiBaseUrl, linkSourceId, photos, selectedPhotoId]
+  );
+
+
+  const handleMarkerClick = useCallback(
+    (event, photoId) => {
+      event.stopPropagation();
+      handlePhotoSelect(photoId);
+    },
+    [handlePhotoSelect]
+  );
+
+  const handleLinkButtonClick = () => {
+    if (!selectedPhotoId || isLinkPending) {
+      return;
+    }
+
+    if (linkSourceId) {
+      setLinkSourceId(null);
+      setStatusMessage({ type: 'info', message: 'Linking cancelled.' });
+      return;
+    }
+
+    setLinkSourceId(selectedPhotoId);
+    if (selectedPhoto) {
+      setStatusMessage({
+        type: 'info',
+        message: `Select another photo to link with "${selectedPhoto.name}".`,
+      });
+    }
+  };
+
+  const handleUnlinkPhoto = useCallback(
+    async (targetId) => {
+      if (!selectedPhotoId || isLinkPending) {
+        return;
+      }
+
+      const sourceLabel = selectedPhoto?.name || 'Photo';
+      const targetLabel = photos.find((photo) => photo._id === targetId)?.name || 'Photo';
+
+      setIsLinkPending(true);
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/panophotos/${selectedPhotoId}/unlink`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ targetId }),
+        });
+
+        if (!response.ok) {
+          const errorBody = await response
+            .json()
+            .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+          throw new Error(errorBody.message || 'Failed to remove link');
+        }
+
+        const payload = await response.json();
+        mergeUpdatedPhotos(payload.panophotos || []);
+        setStatusMessage({
+          type: 'success',
+          message: `Removed link between "${sourceLabel}" and "${targetLabel}".`,
+        });
+      } catch (error) {
+        setStatusMessage({ type: 'error', message: error.message });
+      } finally {
+        setIsLinkPending(false);
+      }
+    },
+    [apiBaseUrl, isLinkPending, mergeUpdatedPhotos, photos, selectedPhoto, selectedPhotoId]
+  );
+
+  const handleCanvasClick = async (event) => {
+    if (linkSourceId) {
+      setStatusMessage({
+        type: 'info',
+        message: 'Linking in progress. Select another photo or cancel linking.',
+      });
+      return;
+    }
+
+    if (!selectedPhoto) {
+      setStatusMessage({ type: 'error', message: 'Select a photo from the list before placing it.' });
+      return;
+    }
+
+    const canvas = canvasRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    const bounds = canvas.getBoundingClientRect();
+    const relativeX = (event.clientX - bounds.left) / bounds.width;
+    const relativeY = (event.clientY - bounds.top) / bounds.height;
+
+    const clampedX = Math.max(0, Math.min(1, relativeX));
+    const clampedY = Math.max(0, Math.min(1, relativeY));
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/panophotos/${selectedPhoto._id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          xPosition: clampedX,
+          yPosition: clampedY,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to update photo position');
+      }
+
+      const payload = await response.json();
+      setPhotos((prev) =>
+        prev.map((photo) => (photo._id === payload.panophoto._id ? payload.panophoto : photo))
+      );
+      setStatusMessage({ type: 'success', message: 'Photo position updated.' });
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    }
+  };
+
+  if (!activeProject) {
+    return (
+      <div className="project-editor-page project-editor-empty">
+        <h1>No Active Project</h1>
+        <p>Use the Projects page to create or activate a project before managing photos.</p>
+        <Link className="button-link" to="/projects">
+          Go to Projects
+        </Link>
+        {statusMessage && (
+          <p className={`panophoto-status ${statusMessage.type}`}>{statusMessage.message}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="project-editor-page">
+      <div className="project-editor-main">
+        <header className="project-editor-header">
+          <div>
+            <h1>{activeProject.name}</h1>
+            {activeProject.description ? <p>{activeProject.description}</p> : null}
+          </div>
+          <Link className="button-link" to="/projects">
+            Manage Projects
+          </Link>
+        </header>
+
+        <section className="project-upload-panel">
+          <div>
+            <h3>Upload Photos</h3>
+            <p className="canvas-helper-text">
+              Upload multiple images at once. Names and storage keys are generated automatically.
+            </p>
+          </div>
+          <form onSubmit={handleUpload} className="project-upload-form">
+            <input
+              type="file"
+              name="images"
+              accept="image/*"
+              multiple
+              onChange={handleFileChange}
+            />
+            {uploadFiles.length > 0 && (
+              <p className="project-upload-file-info">
+                Selected files: {uploadFiles.map((file) => file.name).join(', ')}
+              </p>
+            )}
+            <button type="submit" disabled={isUploading}>
+              {isUploading ? 'Uploading…' : 'Upload Photos'}
+            </button>
+          </form>
+        </section>
+
+        <div className="project-editor-body">
+          <aside className="project-photo-panel">
+            <h3>Photos</h3>
+            {photos.length === 0 ? (
+              <p className="panophoto-status">No photos in this project yet.</p>
+            ) : (
+              <div className="project-photo-grid">
+                {photos.map((photo) => {
+                  const imageUrl = photo.thumbnailUrl || photo.imageUrl;
+                  const isDeleting = deletingPhotoIds.includes(photo._id);
+
+                  return (
+                    <ProjectPhotoThumbnail
+                      key={photo._id}
+                      label={photo.name}
+                      imageUrl={imageUrl}
+                      isSelected={photo._id === selectedPhotoId}
+                      isLinkSource={linkSourceId === photo._id}
+                      isBusy={isDeleting}
+                      onClick={() => handlePhotoSelect(photo._id)}
+                      onDelete={() => handleDeletePhoto(photo._id)}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </aside>
+
+          <div className="project-canvas-wrapper">
+            <div ref={canvasRef} className="project-canvas" onClick={handleCanvasClick}>
+              <svg className="project-canvas-links" viewBox="0 0 100 100" preserveAspectRatio="none">
+                {linkLines.map((segment) => (
+                  <line
+                    key={segment.id}
+                    x1={segment.x1}
+                    y1={segment.y1}
+                    x2={segment.x2}
+                    y2={segment.y2}
+                    className="project-canvas-link-line"
+                  />
+                ))}
+              </svg>
+              {photos.map((photo) => (
+                <ProjectCanvasMarker
+                  key={photo._id}
+                  label={photo.name}
+                  x={photo.xPosition ?? 0}
+                  y={photo.yPosition ?? 0}
+                  isSelected={photo._id === selectedPhotoId}
+                  isLinkSource={linkSourceId === photo._id}
+                  onClick={(event) => handleMarkerClick(event, photo._id)}
+                />
+              ))}
+            </div>
+
+            <div className="project-canvas-actions">
+              <button
+                type="button"
+                className={`project-link-button${linkSourceId ? ' active' : ''}`}
+                onClick={handleLinkButtonClick}
+                disabled={!selectedPhotoId || isLinkPending}
+              >
+                {linkSourceId ? 'Cancel Linking' : 'Link Photos'}
+              </button>
+              {linkSourceId && linkingSourcePhoto ? (
+                <span className="project-link-hint">
+                  Select another photo to link with "{linkingSourcePhoto.name}".
+                </span>
+              ) : null}
+            </div>
+
+            {selectedPhoto?.linkedPhotos?.length ? (
+              <div className="project-link-list-wrapper">
+                <h4>Linked Photos</h4>
+                <ul className="project-link-list">
+                  {selectedPhoto.linkedPhotos.map((linkedItem) => {
+                    const linkedId = normalizeId(linkedItem);
+
+                    if (!linkedId) {
+                      return null;
+                    }
+
+                    const linkedPhoto = photos.find((photo) => photo._id === linkedId);
+                    const label = linkedPhoto?.name || 'Photo';
+
+                    return (
+                      <li key={linkedId} className="project-link-item">
+                        <span>{label}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleUnlinkPhoto(linkedId)}
+                          disabled={isLinkPending}
+                        >
+                          Remove Link
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : null}
+
+            <p className="canvas-helper-text">
+              Select a photo from the list, then click on the canvas to set its position.
+            </p>
+          </div>
+        </div>
+
+        {statusMessage && (
+          <p className={`panophoto-status ${statusMessage.type}`}>{statusMessage.message}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default ProjectEditor;

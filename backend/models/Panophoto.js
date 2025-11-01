@@ -8,27 +8,40 @@ const panophotoSchema = new mongoose.Schema(
       trim: true,
     },
     project: {
-      type: String,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Project',
       required: true,
-      trim: true,
     },
     xPosition: {
       type: Number,
-      required: true,
+      default: 0,
     },
     yPosition: {
       type: Number,
-      required: true,
+      default: 0,
     },
     imageUrl: {
       type: String,
       required: true,
       trim: true,
     },
+    thumbnailUrl: {
+      type: String,
+      trim: true,
+    },
     s3Key: {
       type: String,
       required: true,
       trim: true,
+    },
+    linkedPhotos: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'Panophoto',
+        },
+      ],
+      default: [],
     },
   },
   {

@@ -3,9 +3,10 @@ import React from 'react';
 //react router
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import Home from './Pages/Home';
-import UploadTest from './Pages/UploadTest';
 import PanophotoList from './Pages/PanophotoList';
 import Panoviewer from './Components/Panoviewer';
+import ProjectEditor from './Pages/ProjectEditor';
+import Projects from './Pages/Projects';
 import Navigation from './Components/Navigation';
 
 
@@ -18,9 +19,10 @@ function App() {
 
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/upload-test" element={<UploadTest />} />
+          <Route path="/projects" element={<Projects />} />
           <Route path="/panophotos" element={<PanophotoList />} />
           <Route path="/viewer" element={<Panoviewer />} />
+          <Route path="/projects/editor" element={<ProjectEditor />} />
         </Routes>
       </div>
     </Router>
