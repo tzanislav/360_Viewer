@@ -24,6 +24,16 @@ const normalizeId = (value) => {
   return value.toString();
 };
 
+const clamp01 = (value) => {
+  const parsed = Number.parseFloat(value);
+
+  if (Number.isFinite(parsed)) {
+    return Math.min(1, Math.max(0, parsed));
+  }
+
+  return 0;
+};
+
 function ProjectEditor() {
   const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
   const navigate = useNavigate();
@@ -38,6 +48,15 @@ function ProjectEditor() {
   const [deletingPhotoIds, setDeletingPhotoIds] = useState([]);
   const [startPhotoId, setStartPhotoId] = useState(null);
   const canvasRef = useRef(null);
+  const [draggingPhotoId, setDraggingPhotoId] = useState(null);
+  const dragStateRef = useRef({
+    photoId: null,
+    pointerId: null,
+    startPosition: null,
+    position: null,
+    hasMoved: false,
+  });
+  const suppressClickRef = useRef(false);
 
   const selectedPhoto = useMemo(
     () => photos.find((photo) => photo._id === selectedPhotoId),
@@ -261,6 +280,60 @@ function ProjectEditor() {
     });
   }, []);
 
+  const persistPhotoPosition = useCallback(
+    async (photoId, xPosition, yPosition, fallbackPosition) => {
+      if (!photoId) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/panophotos/${photoId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ xPosition, yPosition }),
+        });
+
+        if (!response.ok) {
+          const errorBody = await response
+            .json()
+            .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+          throw new Error(errorBody.message || 'Failed to update photo position');
+        }
+
+        const payload = await response.json();
+
+        const updates = [];
+
+        if (payload.panophoto) {
+          updates.push(payload.panophoto);
+        }
+
+        if (Array.isArray(payload.neighbors)) {
+          payload.neighbors.filter(Boolean).forEach((neighbor) => {
+            updates.push(neighbor);
+          });
+        }
+
+        mergeUpdatedPhotos(updates);
+        setStatusMessage({ type: 'success', message: 'Photo position updated.' });
+      } catch (error) {
+        setStatusMessage({ type: 'error', message: error.message });
+
+        if (fallbackPosition && Number.isFinite(fallbackPosition.x) && Number.isFinite(fallbackPosition.y)) {
+          setPhotos((prev) =>
+            prev.map((photo) =>
+              photo._id === photoId
+                ? { ...photo, xPosition: fallbackPosition.x, yPosition: fallbackPosition.y }
+                : photo
+            )
+          );
+        }
+      }
+    },
+    [apiBaseUrl, mergeUpdatedPhotos, setPhotos, setStatusMessage]
+  );
+
   const createLinkBetweenPhotos = useCallback(
     async (sourceId, targetId) => {
       setIsLinkPending(true);
@@ -460,6 +533,13 @@ function ProjectEditor() {
 
   const handleMarkerClick = useCallback(
     (event, photoId) => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       event.stopPropagation();
       handlePhotoSelect(photoId);
     },
@@ -527,71 +607,148 @@ function ProjectEditor() {
     [apiBaseUrl, isLinkPending, mergeUpdatedPhotos, photos, selectedPhoto, selectedPhotoId]
   );
 
-  const handleCanvasClick = async (event) => {
-    if (linkSourceId) {
-      setStatusMessage({
-        type: 'info',
-        message: 'Linking in progress. Select another photo or cancel linking.',
-      });
-      return;
-    }
-
-    if (!selectedPhoto) {
-      setStatusMessage({ type: 'error', message: 'Select a photo from the list before placing it.' });
-      return;
-    }
-
-    const canvas = canvasRef.current;
-
-    if (!canvas) {
-      return;
-    }
-
-    const bounds = canvas.getBoundingClientRect();
-    const relativeX = (event.clientX - bounds.left) / bounds.width;
-    const relativeY = (event.clientY - bounds.top) / bounds.height;
-
-    const clampedX = Math.max(0, Math.min(1, relativeX));
-    const clampedY = Math.max(0, Math.min(1, relativeY));
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/panophotos/${selectedPhoto._id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          xPosition: clampedX,
-          yPosition: clampedY,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorBody = await response
-          .json()
-          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
-        throw new Error(errorBody.message || 'Failed to update photo position');
+  const handleMarkerDragStart = useCallback(
+    (event, photoId) => {
+      if (!canvasRef.current) {
+        return false;
       }
 
-      const payload = await response.json();
-
-      const updates = [];
-
-      if (payload.panophoto) {
-        updates.push(payload.panophoto);
+      if (linkSourceId || isLinkPending || deletingPhotoIds.includes(photoId)) {
+        return false;
       }
 
-      if (Array.isArray(payload.neighbors)) {
-        payload.neighbors.filter(Boolean).forEach((neighbor) => {
-          updates.push(neighbor);
-        });
+  event.stopPropagation();
+
+      setSelectedPhotoId((prev) => (prev === photoId ? prev : photoId));
+      setStatusMessage(null);
+
+      const targetPhoto = photos.find((photo) => photo._id === photoId);
+      const startX = clamp01(targetPhoto?.xPosition ?? 0);
+      const startY = clamp01(targetPhoto?.yPosition ?? 0);
+
+      dragStateRef.current = {
+        photoId,
+        pointerId: event.pointerId,
+        startPosition: { x: startX, y: startY },
+        position: { x: startX, y: startY },
+        hasMoved: false,
+      };
+
+      setDraggingPhotoId(photoId);
+      return true;
+    },
+    [canvasRef, deletingPhotoIds, isLinkPending, linkSourceId, photos, setSelectedPhotoId, setStatusMessage]
+  );
+
+  const handleMarkerDrag = useCallback(
+    (event, photoId) => {
+      const dragState = dragStateRef.current;
+
+      if (!dragState || dragState.photoId !== photoId) {
+        return;
       }
 
-      mergeUpdatedPhotos(updates);
-      setStatusMessage({ type: 'success', message: 'Photo position updated.' });
-    } catch (error) {
-      setStatusMessage({ type: 'error', message: error.message });
-    }
-  };
+      const canvas = canvasRef.current;
+
+      if (!canvas) {
+        return;
+      }
+
+  event.stopPropagation();
+
+      const bounds = canvas.getBoundingClientRect();
+      const { width, height, left, top } = bounds;
+
+      if (width <= 0 || height <= 0) {
+        return;
+      }
+
+      const relativeX = (event.clientX - left) / width;
+      const relativeY = (event.clientY - top) / height;
+
+      const clampedX = clamp01(relativeX);
+      const clampedY = clamp01(relativeY);
+
+      const startX = dragState.startPosition?.x ?? clampedX;
+      const startY = dragState.startPosition?.y ?? clampedY;
+      const deltaX = Math.abs(clampedX - startX);
+      const deltaY = Math.abs(clampedY - startY);
+      const hasMoved = dragState.hasMoved || deltaX + deltaY > 0.002;
+
+      if (
+        dragState.position &&
+        !hasMoved &&
+        Math.abs(clampedX - dragState.position.x) < 1e-4 &&
+        Math.abs(clampedY - dragState.position.y) < 1e-4
+      ) {
+        return;
+      }
+
+      dragStateRef.current = {
+        ...dragState,
+        hasMoved,
+        position: { x: clampedX, y: clampedY },
+      };
+
+      setPhotos((prev) =>
+        prev.map((photo) =>
+          photo._id === photoId ? { ...photo, xPosition: clampedX, yPosition: clampedY } : photo
+        )
+      );
+    },
+    [canvasRef, setPhotos]
+  );
+
+  const handleMarkerDragEnd = useCallback(
+    (event, metadata, photoId) => {
+      const dragState = dragStateRef.current;
+
+      if (!dragState || dragState.photoId !== photoId) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const isCancelled = Boolean(metadata?.cancelled);
+      const startPosition = dragState.startPosition;
+      const finalPosition = dragState.position;
+      const hasMoved = dragState.hasMoved;
+
+      dragStateRef.current = {
+        photoId: null,
+        pointerId: null,
+        startPosition: null,
+        position: null,
+        hasMoved: false,
+      };
+
+      setDraggingPhotoId(null);
+
+      if (isCancelled) {
+        if (startPosition) {
+          setPhotos((prev) =>
+            prev.map((photo) =>
+              photo._id === photoId
+                ? { ...photo, xPosition: startPosition.x, yPosition: startPosition.y }
+                : photo
+            )
+          );
+        }
+        return;
+      }
+
+      if (hasMoved && finalPosition) {
+        suppressClickRef.current = true;
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+
+        persistPhotoPosition(photoId, finalPosition.x, finalPosition.y, startPosition);
+      }
+    },
+    [persistPhotoPosition, setDraggingPhotoId, setPhotos]
+  );
 
   if (!activeProject) {
     return (
@@ -628,9 +785,7 @@ function ProjectEditor() {
             >
               Open Viewer
             </button>
-            <Link className="button-link" to="/projects">
-              Manage Projects
-            </Link>
+            {/* Manage Projects link removed */}
           </div>
         </header>
 
@@ -690,7 +845,7 @@ function ProjectEditor() {
           </aside>
 
           <div className="project-canvas-wrapper">
-            <div ref={canvasRef} className="project-canvas" onClick={handleCanvasClick}>
+            <div ref={canvasRef} className="project-canvas">
               <svg className="project-canvas-links" viewBox="0 0 100 100" preserveAspectRatio="none">
                 {linkLines.map((segment) => (
                   <line
@@ -712,7 +867,11 @@ function ProjectEditor() {
                   isSelected={photo._id === selectedPhotoId}
                   isLinkSource={linkSourceId === photo._id}
                   isStart={photo._id === resolvedStartPhotoId}
+                  isDragging={draggingPhotoId === photo._id}
                   onClick={(event) => handleMarkerClick(event, photo._id)}
+                  onDragStart={(event) => handleMarkerDragStart(event, photo._id)}
+                  onDrag={(event) => handleMarkerDrag(event, photo._id)}
+                  onDragEnd={(event, metadata) => handleMarkerDragEnd(event, metadata, photo._id)}
                 />
               ))}
             </div>
@@ -773,7 +932,7 @@ function ProjectEditor() {
             ) : null}
 
             <p className="canvas-helper-text">
-              Select a photo from the list, then click on the canvas to set its position.
+              Select a photo, then drag its marker on the canvas to update its position.
             </p>
           </div>
         </div>
