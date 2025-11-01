@@ -13,6 +13,45 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
+async function ensureProjectStartPanophoto(projectId) {
+  if (!mongoose.isValidObjectId(projectId)) {
+    return;
+  }
+
+  try {
+    const project = await Project.findById(projectId);
+
+    if (!project) {
+      return;
+    }
+
+    if (project.startPanophoto) {
+      const exists = await Panophoto.exists({ _id: project.startPanophoto });
+      if (exists) {
+        return;
+      }
+    }
+
+    const fallback = await Panophoto.findOne({ project: projectId })
+      .sort({ createdAt: 1 })
+      .select('_id');
+
+    const fallbackId = fallback ? fallback._id : null;
+
+    const currentId = project.startPanophoto ? project.startPanophoto.toString() : null;
+    const nextId = fallbackId ? fallbackId.toString() : null;
+
+    if (currentId === nextId) {
+      return;
+    }
+
+    project.startPanophoto = fallbackId;
+    await project.save();
+  } catch (error) {
+    console.error('Failed to ensure project start panophoto:', error);
+  }
+}
+
 const slugify = (value) => {
   if (!value) {
     return 'item';
@@ -27,6 +66,112 @@ const slugify = (value) => {
     .replace(/_{2,}/g, '_')
     || 'item';
 };
+
+const toFiniteOr = (value, fallback = 0) => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const calculateAzimuthDegrees = (sourcePhoto, targetPhoto) => {
+  const sourceX = toFiniteOr(sourcePhoto?.xPosition, 0);
+  const sourceY = toFiniteOr(sourcePhoto?.yPosition, 0);
+  const targetX = toFiniteOr(targetPhoto?.xPosition, 0);
+  const targetY = toFiniteOr(targetPhoto?.yPosition, 0);
+
+  const deltaX = targetX - sourceX;
+  const deltaY = targetY - sourceY;
+
+  if (deltaX === 0 && deltaY === 0) {
+    return 0;
+  }
+
+  const radians = Math.atan2(deltaX, -deltaY);
+  const degrees = (radians * (180 / Math.PI) + 360) % 360;
+  return degrees;
+};
+
+async function upsertLink(sourcePhoto, targetPhoto, azimuth) {
+  // Remove legacy ObjectId-only entries so we can manage structured links in one place.
+  await Panophoto.updateOne(
+    { _id: sourcePhoto._id },
+    { $pull: { linkedPhotos: targetPhoto._id } }
+  );
+
+  const updateResult = await Panophoto.updateOne(
+    { _id: sourcePhoto._id, 'linkedPhotos.target': targetPhoto._id },
+    { $set: { 'linkedPhotos.$.azimuth': azimuth } }
+  );
+
+  const matchedCount =
+    typeof updateResult?.matchedCount === 'number'
+      ? updateResult.matchedCount
+      : updateResult?.n ?? 0;
+
+  if (!matchedCount) {
+    await Panophoto.updateOne(
+      { _id: sourcePhoto._id },
+      {
+        $addToSet: {
+          linkedPhotos: {
+            target: targetPhoto._id,
+            azimuth,
+            azimuthOffset: 0,
+          },
+        },
+      }
+    );
+  }
+}
+
+async function recalculateLinkAzimuths(photo) {
+  if (!photo) {
+    return [];
+  }
+
+  const fullSource = photo instanceof Panophoto ? photo : null;
+  const sourceDocument = fullSource || (await Panophoto.findById(photo._id));
+
+  if (!sourceDocument || !Array.isArray(sourceDocument.linkedPhotos)) {
+    return [];
+  }
+
+  const neighborIds = sourceDocument.linkedPhotos
+    .map((link) => {
+      if (!link) {
+        return null;
+      }
+
+      if (link.target && link.target._id) {
+        return link.target._id;
+      }
+
+      return link.target || link;
+    })
+    .filter((value) => mongoose.isValidObjectId(value))
+    .map((value) => value.toString());
+
+  const uniqueNeighborIds = [...new Set(neighborIds)];
+
+  if (uniqueNeighborIds.length === 0) {
+    return [];
+  }
+
+  const neighborPhotos = await Panophoto.find({ _id: { $in: uniqueNeighborIds } });
+
+  await Promise.all(
+    neighborPhotos.map(async (neighbor) => {
+      const forwardAzimuth = calculateAzimuthDegrees(sourceDocument, neighbor);
+      const reverseAzimuth = calculateAzimuthDegrees(neighbor, sourceDocument);
+
+      await Promise.all([
+        upsertLink(sourceDocument, neighbor, forwardAzimuth),
+        upsertLink(neighbor, sourceDocument, reverseAzimuth),
+      ]);
+    })
+  );
+
+  return uniqueNeighborIds;
+}
 
 const uploadMultipleImages = (req, res, next) => {
   upload.array('images', 20)(req, res, (err) => {
@@ -57,12 +202,36 @@ router.get('/', async (req, res) => {
   try {
     const panophotos = await Panophoto.find(filter)
       .sort({ createdAt: -1 })
-      .populate('project', 'name');
+      .populate('project', 'name')
+      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
 
     res.json({ panophotos });
   } catch (error) {
     console.error('Failed to list pano photos:', error);
     res.status(500).json({ message: 'Unable to list pano photos' });
+  }
+});
+
+router.get('/:id', async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ message: 'Invalid panophoto id' });
+  }
+
+  try {
+    const panophoto = await Panophoto.findById(id)
+      .populate('project', 'name')
+      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
+
+    if (!panophoto) {
+      return res.status(404).json({ message: 'Panophoto not found' });
+    }
+
+    return res.json({ panophoto });
+  } catch (error) {
+    console.error('Failed to load panophoto:', error);
+    return res.status(500).json({ message: 'Unable to load panophoto' });
   }
 });
 
@@ -152,6 +321,7 @@ router.post('/', uploadMultipleImages, async (req, res) => {
       await Project.findByIdAndUpdate(activeProject._id, {
         $push: { panophotos: { $each: createdPhotoIds } },
       });
+      await ensureProjectStartPanophoto(activeProject._id);
     }
   } catch (error) {
     console.error('Failed to update project with panophotos:', error);
@@ -160,7 +330,8 @@ router.post('/', uploadMultipleImages, async (req, res) => {
   try {
     const populatedPhotos = await Panophoto.find({ _id: { $in: createdPhotoIds } })
       .sort({ createdAt: -1 })
-      .populate('project', 'name');
+      .populate('project', 'name')
+      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
 
     return res.status(201).json({
       message: 'Pano photos stored successfully',
@@ -193,10 +364,38 @@ router.delete('/:id', async (req, res) => {
     }
 
     if (Array.isArray(panophoto.linkedPhotos) && panophoto.linkedPhotos.length > 0) {
-      await Panophoto.updateMany(
-        { _id: { $in: panophoto.linkedPhotos } },
-        { $pull: { linkedPhotos: panophoto._id } }
-      );
+      const neighborIds = [...new Set(
+        panophoto.linkedPhotos
+          .map((link) => {
+            if (!link) {
+              return null;
+            }
+
+            if (link.target && link.target._id) {
+              return link.target._id;
+            }
+
+            return link.target || link;
+          })
+          .filter((value) => mongoose.isValidObjectId(value))
+          .map((value) => value.toString())
+      )];
+
+      if (neighborIds.length > 0) {
+        await Panophoto.updateMany(
+          { _id: { $in: neighborIds } },
+          {
+            $pull: {
+              linkedPhotos: { target: panophoto._id },
+            },
+          }
+        );
+
+        await Panophoto.updateMany(
+          { _id: { $in: neighborIds } },
+          { $pull: { linkedPhotos: panophoto._id } }
+        );
+      }
     }
 
     const s3Client = getS3Client();
@@ -221,6 +420,7 @@ router.delete('/:id', async (req, res) => {
       await Project.findByIdAndUpdate(panophoto.project, {
         $pull: { panophotos: panophoto._id },
       });
+      await ensureProjectStartPanophoto(panophoto.project);
     }
 
     return res.json({ message: 'Panophoto deleted successfully' });
@@ -256,14 +456,21 @@ router.patch('/:id/link', async (req, res) => {
       return res.status(400).json({ message: 'Photos must belong to the same project to link' });
     }
 
+    const forwardAzimuth = calculateAzimuthDegrees(sourcePhoto, targetPhoto);
+    const reverseAzimuth = calculateAzimuthDegrees(targetPhoto, sourcePhoto);
+
     await Promise.all([
-      Panophoto.updateOne({ _id: sourcePhoto._id }, { $addToSet: { linkedPhotos: targetPhoto._id } }),
-      Panophoto.updateOne({ _id: targetPhoto._id }, { $addToSet: { linkedPhotos: sourcePhoto._id } }),
+      upsertLink(sourcePhoto, targetPhoto, forwardAzimuth),
+      upsertLink(targetPhoto, sourcePhoto, reverseAzimuth),
     ]);
 
     const [updatedSource, updatedTarget] = await Promise.all([
-      Panophoto.findById(id).populate('project', 'name'),
-      Panophoto.findById(targetId).populate('project', 'name'),
+      Panophoto.findById(id)
+        .populate('project', 'name')
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+      Panophoto.findById(targetId)
+        .populate('project', 'name')
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
     ]);
 
     return res.json({
@@ -299,13 +506,28 @@ router.patch('/:id/unlink', async (req, res) => {
     }
 
     await Promise.all([
+      Panophoto.updateOne(
+        { _id: sourcePhoto._id },
+        { $pull: { linkedPhotos: { target: targetPhoto._id } } }
+      ),
+      Panophoto.updateOne(
+        { _id: targetPhoto._id },
+        { $pull: { linkedPhotos: { target: sourcePhoto._id } } }
+      ),
+    ]);
+
+    await Promise.all([
       Panophoto.updateOne({ _id: sourcePhoto._id }, { $pull: { linkedPhotos: targetPhoto._id } }),
       Panophoto.updateOne({ _id: targetPhoto._id }, { $pull: { linkedPhotos: sourcePhoto._id } }),
     ]);
 
     const [updatedSource, updatedTarget] = await Promise.all([
-      Panophoto.findById(id).populate('project', 'name'),
-      Panophoto.findById(targetId).populate('project', 'name'),
+      Panophoto.findById(id)
+        .populate('project', 'name')
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+      Panophoto.findById(targetId)
+        .populate('project', 'name')
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
     ]);
 
     return res.json({
@@ -355,13 +577,32 @@ router.patch('/:id', async (req, res) => {
     const panophoto = await Panophoto.findByIdAndUpdate(id, update, {
       new: true,
       runValidators: true,
-    }).populate('project', 'name');
+    })
+      .populate('project', 'name')
+      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
 
     if (!panophoto) {
       return res.status(404).json({ message: 'Panophoto not found' });
     }
 
-    return res.json({ message: 'Panophoto updated successfully', panophoto });
+    const neighborIds = await recalculateLinkAzimuths(panophoto);
+
+    const [updatedPanophoto, neighbors] = await Promise.all([
+      Panophoto.findById(panophoto._id)
+        .populate('project', 'name')
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+      neighborIds.length
+        ? Panophoto.find({ _id: { $in: neighborIds } })
+            .populate('project', 'name')
+            .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition')
+        : [],
+    ]);
+
+    return res.json({
+      message: 'Panophoto updated successfully',
+      panophoto: updatedPanophoto,
+      neighbors,
+    });
   } catch (error) {
     console.error('Failed to update panophoto:', error);
     return res.status(500).json({ message: 'Failed to update panophoto' });

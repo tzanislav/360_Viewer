@@ -116,7 +116,11 @@ function PanophotoList() {
                 <button
                   type="button"
                   className="panophoto-open-button"
-                  onClick={() => navigate('/viewer', { state: { src: panophoto.imageUrl } })}
+                  onClick={() =>
+                    navigate(`/viewer?id=${panophoto._id}`, {
+                      state: { panophotoId: panophoto._id },
+                    })
+                  }
                 >
                   Open
                 </button>

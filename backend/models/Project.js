@@ -15,6 +15,11 @@ const projectSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    startPanophoto: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Panophoto',
+      default: null,
+    },
     panophotos: [
       {
         type: mongoose.Schema.Types.ObjectId,

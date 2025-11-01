@@ -6,6 +6,7 @@ function ProjectPhotoThumbnail({
   imageUrl,
   isSelected = false,
   isLinkSource = false,
+  isStart = false,
   isBusy = false,
   onClick,
   onDelete,
@@ -15,6 +16,7 @@ function ProjectPhotoThumbnail({
     'project-photo-thumb',
     isSelected ? 'selected' : '',
     isLinkSource ? 'linking-source' : '',
+    isStart ? 'start' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -42,6 +44,7 @@ function ProjectPhotoThumbnail({
 
   return (
     <div className="project-photo-thumb-container">
+      {isStart ? <span className="project-photo-thumb-badge">Start</span> : null}
       <button type="button" className={classNames} onClick={handleThumbnailClick} style={style} disabled={isBusy}>
         <span>{name}</span>
       </button>

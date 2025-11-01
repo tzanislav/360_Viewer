@@ -1,5 +1,24 @@
 const mongoose = require('mongoose');
 
+const linkSchema = new mongoose.Schema(
+  {
+    target: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Panophoto',
+      required: true,
+    },
+    azimuth: {
+      type: Number,
+      default: 0,
+    },
+    azimuthOffset: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { _id: false }
+);
+
 const panophotoSchema = new mongoose.Schema(
   {
     name: {
@@ -35,12 +54,7 @@ const panophotoSchema = new mongoose.Schema(
       trim: true,
     },
     linkedPhotos: {
-      type: [
-        {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'Panophoto',
-        },
-      ],
+      type: [linkSchema],
       default: [],
     },
   },

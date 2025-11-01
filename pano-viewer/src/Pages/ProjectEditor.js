@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import ProjectCanvasMarker from '../Components/ProjectCanvasMarker';
 import ProjectPhotoThumbnail from '../Components/ProjectPhotoThumbnail';
 import '../CSS/styles.css';
@@ -13,6 +13,10 @@ const normalizeId = (value) => {
     return '';
   }
 
+  if (typeof value === 'object' && value.target !== undefined) {
+    return normalizeId(value.target);
+  }
+
   if (typeof value === 'object' && value._id) {
     return value._id.toString();
   }
@@ -22,6 +26,7 @@ const normalizeId = (value) => {
 
 function ProjectEditor() {
   const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
+  const navigate = useNavigate();
   const [activeProject, setActiveProject] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [selectedPhotoId, setSelectedPhotoId] = useState(null);
@@ -31,6 +36,7 @@ function ProjectEditor() {
   const [linkSourceId, setLinkSourceId] = useState(null);
   const [isLinkPending, setIsLinkPending] = useState(false);
   const [deletingPhotoIds, setDeletingPhotoIds] = useState([]);
+  const [startPhotoId, setStartPhotoId] = useState(null);
   const canvasRef = useRef(null);
 
   const selectedPhoto = useMemo(
@@ -85,20 +91,59 @@ function ProjectEditor() {
     return segments;
   }, [photos]);
 
+  const fallbackStartPhoto = useMemo(() => {
+    if (!Array.isArray(photos) || photos.length === 0) {
+      return null;
+    }
+
+    const sorted = [...photos].sort((a, b) => {
+      const aTimeRaw = new Date(a?.createdAt || 0).getTime();
+      const bTimeRaw = new Date(b?.createdAt || 0).getTime();
+      const aTime = Number.isFinite(aTimeRaw) ? aTimeRaw : 0;
+      const bTime = Number.isFinite(bTimeRaw) ? bTimeRaw : 0;
+      return aTime - bTime;
+    });
+
+    return sorted[0] || null;
+  }, [photos]);
+
+  const resolvedStartPhotoId = useMemo(() => {
+    if (startPhotoId) {
+      return startPhotoId;
+    }
+
+    return fallbackStartPhoto?._id || null;
+  }, [startPhotoId, fallbackStartPhoto]);
+
+  const resolvedStartPhoto = useMemo(() => {
+    if (!resolvedStartPhotoId) {
+      return null;
+    }
+
+    return (
+      photos.find((photo) => photo._id === resolvedStartPhotoId) || fallbackStartPhoto || null
+    );
+  }, [photos, resolvedStartPhotoId, fallbackStartPhoto]);
+
+  const isSelectedStoredStart = Boolean(selectedPhotoId && startPhotoId && selectedPhotoId === startPhotoId);
+
   const loadActiveProject = useCallback(async () => {
     try {
       const response = await fetch(`${apiBaseUrl}/api/projects/active`, { credentials: 'include' });
 
       if (!response.ok) {
         setActiveProject(null);
+        setStartPhotoId(null);
         return;
       }
 
       const payload = await response.json();
       setActiveProject(payload.project);
+      setStartPhotoId(normalizeId(payload.project?.startPanophoto) || null);
     } catch (error) {
       console.error('Failed to fetch active project:', error);
       setActiveProject(null);
+      setStartPhotoId(null);
     }
   }, [apiBaseUrl]);
 
@@ -132,6 +177,11 @@ function ProjectEditor() {
   useEffect(() => {
     loadActiveProject();
   }, [loadActiveProject]);
+
+  useEffect(() => {
+    const normalizedStartId = normalizeId(activeProject?.startPanophoto);
+    setStartPhotoId(normalizedStartId || null);
+  }, [activeProject]);
 
   useEffect(() => {
     if (activeProject?._id) {
@@ -192,6 +242,7 @@ function ProjectEditor() {
       setUploadFiles([]);
       event.target.reset();
       setStatusMessage({ type: 'success', message: `Uploaded ${payload.panophotos.length} photo(s).` });
+      await loadActiveProject();
     } catch (error) {
       setStatusMessage({ type: 'error', message: error.message });
     } finally {
@@ -248,6 +299,62 @@ function ProjectEditor() {
     },
     [apiBaseUrl, mergeUpdatedPhotos, photos]
   );
+
+  const handleSetStartPhoto = useCallback(async () => {
+    if (!selectedPhotoId || !activeProject?._id) {
+      setStatusMessage({ type: 'error', message: 'Select a photo before setting the start scene.' });
+      return;
+    }
+
+    if (startPhotoId && selectedPhotoId === startPhotoId) {
+      setStatusMessage({ type: 'info', message: 'This photo is already the start scene.' });
+      return;
+    }
+
+    const selectedLabel = selectedPhoto?.name || 'Photo';
+
+    try {
+      setStatusMessage(null);
+      const response = await fetch(`${apiBaseUrl}/api/projects/${activeProject._id}/start`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ panophotoId: selectedPhotoId }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to update start photo');
+      }
+
+      const payload = await response.json();
+      setActiveProject(payload.project);
+      setStartPhotoId(normalizeId(payload.project?.startPanophoto) || null);
+      setStatusMessage({ type: 'success', message: `Set "${selectedLabel}" as the start scene.` });
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    }
+  }, [
+    activeProject,
+    apiBaseUrl,
+    selectedPhoto,
+    selectedPhotoId,
+    startPhotoId,
+  ]);
+
+  const handleOpenViewer = useCallback(() => {
+    if (!resolvedStartPhotoId) {
+      setStatusMessage({ type: 'error', message: 'Add a pano photo before opening the viewer.' });
+      return;
+    }
+
+    setStatusMessage(null);
+    navigate(`/viewer?id=${resolvedStartPhotoId}`, {
+      state: { panophotoId: resolvedStartPhotoId },
+    });
+  }, [navigate, resolvedStartPhotoId]);
 
   const handlePhotoSelect = useCallback(
     (photoId) => {
@@ -316,6 +423,14 @@ function ProjectEditor() {
             .filter((photo) => photo._id !== photoId)
         );
 
+        if (photoId === startPhotoId) {
+          setStartPhotoId(null);
+        }
+
+        if (activeProject?._id) {
+          await loadActiveProject();
+        }
+
         if (selectedPhotoId === photoId) {
           setSelectedPhotoId(null);
         }
@@ -331,7 +446,15 @@ function ProjectEditor() {
         setDeletingPhotoIds((prev) => prev.filter((id) => id !== photoId));
       }
     },
-    [apiBaseUrl, linkSourceId, photos, selectedPhotoId]
+    [
+      activeProject,
+      apiBaseUrl,
+      linkSourceId,
+      loadActiveProject,
+      photos,
+      selectedPhotoId,
+      startPhotoId,
+    ]
   );
 
 
@@ -450,9 +573,20 @@ function ProjectEditor() {
       }
 
       const payload = await response.json();
-      setPhotos((prev) =>
-        prev.map((photo) => (photo._id === payload.panophoto._id ? payload.panophoto : photo))
-      );
+
+      const updates = [];
+
+      if (payload.panophoto) {
+        updates.push(payload.panophoto);
+      }
+
+      if (Array.isArray(payload.neighbors)) {
+        payload.neighbors.filter(Boolean).forEach((neighbor) => {
+          updates.push(neighbor);
+        });
+      }
+
+      mergeUpdatedPhotos(updates);
       setStatusMessage({ type: 'success', message: 'Photo position updated.' });
     } catch (error) {
       setStatusMessage({ type: 'error', message: error.message });
@@ -481,10 +615,23 @@ function ProjectEditor() {
           <div>
             <h1>{activeProject.name}</h1>
             {activeProject.description ? <p>{activeProject.description}</p> : null}
+            <p className="project-start-summary">
+              Start photo: {resolvedStartPhoto ? resolvedStartPhoto.name : 'Not set'}
+            </p>
           </div>
-          <Link className="button-link" to="/projects">
-            Manage Projects
-          </Link>
+          <div className="project-editor-header-actions">
+            <button
+              type="button"
+              className="project-open-viewer-button"
+              onClick={handleOpenViewer}
+              disabled={!resolvedStartPhotoId}
+            >
+              Open Viewer
+            </button>
+            <Link className="button-link" to="/projects">
+              Manage Projects
+            </Link>
+          </div>
         </header>
 
         <section className="project-upload-panel">
@@ -531,6 +678,7 @@ function ProjectEditor() {
                       imageUrl={imageUrl}
                       isSelected={photo._id === selectedPhotoId}
                       isLinkSource={linkSourceId === photo._id}
+                      isStart={photo._id === resolvedStartPhotoId}
                       isBusy={isDeleting}
                       onClick={() => handlePhotoSelect(photo._id)}
                       onDelete={() => handleDeletePhoto(photo._id)}
@@ -563,6 +711,7 @@ function ProjectEditor() {
                   y={photo.yPosition ?? 0}
                   isSelected={photo._id === selectedPhotoId}
                   isLinkSource={linkSourceId === photo._id}
+                  isStart={photo._id === resolvedStartPhotoId}
                   onClick={(event) => handleMarkerClick(event, photo._id)}
                 />
               ))}
@@ -576,6 +725,14 @@ function ProjectEditor() {
                 disabled={!selectedPhotoId || isLinkPending}
               >
                 {linkSourceId ? 'Cancel Linking' : 'Link Photos'}
+              </button>
+              <button
+                type="button"
+                className="project-start-button"
+                onClick={handleSetStartPhoto}
+                disabled={!selectedPhotoId || isLinkPending || isSelectedStoredStart}
+              >
+                {isSelectedStoredStart ? 'Start Scene' : 'Set as Start'}
               </button>
               {linkSourceId && linkingSourcePhoto ? (
                 <span className="project-link-hint">

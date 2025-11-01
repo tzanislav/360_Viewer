@@ -7,6 +7,7 @@ function ProjectCanvasMarker({
   y = 0,
   isSelected = false,
   isLinkSource = false,
+  isStart = false,
   onClick,
 }) {
   const name = label || 'Photo';
@@ -14,6 +15,7 @@ function ProjectCanvasMarker({
     'project-canvas-marker',
     isSelected ? 'selected' : '',
     isLinkSource ? 'linking-source' : '',
+    isStart ? 'start' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -34,6 +36,7 @@ function ProjectCanvasMarker({
 
   return (
     <div className={classNames} style={style} title={name} onClick={handleClick}>
+      {isStart ? <span className="project-canvas-start-badge">Start</span> : null}
       <div className="project-canvas-dot" />
       <span className="project-canvas-label">{name}</span>
     </div>
