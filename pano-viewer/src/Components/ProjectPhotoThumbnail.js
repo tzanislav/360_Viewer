@@ -8,6 +8,9 @@ function ProjectPhotoThumbnail({
   isLinkSource = false,
   isStart = false,
   isBusy = false,
+  placementLabel,
+  isInactivePlacement = false,
+  isUnplaced = false,
   onClick,
   onDelete,
 }) {
@@ -17,11 +20,20 @@ function ProjectPhotoThumbnail({
     isSelected ? 'selected' : '',
     isLinkSource ? 'linking-source' : '',
     isStart ? 'start' : '',
+    isInactivePlacement ? 'inactive-placement' : '',
+    isUnplaced ? 'unplaced' : '',
+    !imageUrl ? 'no-image' : '',
   ]
     .filter(Boolean)
     .join(' ');
 
-  const style = imageUrl ? { backgroundImage: `url(${imageUrl})` } : undefined;
+  const containerClassNames = [
+    'project-photo-thumb-container',
+    isInactivePlacement ? 'inactive' : '',
+    isUnplaced ? 'unplaced' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   const handleThumbnailClick = (event) => {
     if (typeof onClick === 'function') {
@@ -43,10 +55,15 @@ function ProjectPhotoThumbnail({
   };
 
   return (
-    <div className="project-photo-thumb-container">
+    <div className={containerClassNames}>
       {isStart ? <span className="project-photo-thumb-badge">Start</span> : null}
-      <button type="button" className={classNames} onClick={handleThumbnailClick} style={style} disabled={isBusy}>
-        <span>{name}</span>
+      <button type="button" className={classNames} onClick={handleThumbnailClick} disabled={isBusy}>
+        {imageUrl ? (
+          <span className="project-photo-thumb-image-wrapper" aria-hidden="true">
+            <img src={imageUrl} alt="" className="project-photo-thumb-image" loading="lazy" />
+          </span>
+        ) : null}
+        <span className="project-photo-thumb-label">{name}</span>
       </button>
       {onDelete ? (
         <button
@@ -59,6 +76,9 @@ function ProjectPhotoThumbnail({
         >
           ×
         </button>
+      ) : null}
+      {placementLabel ? (
+        <span className="project-photo-thumb-placement">{placementLabel}</span>
       ) : null}
     </div>
   );

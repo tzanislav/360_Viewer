@@ -11,9 +11,22 @@ const projectRoutes = require('./routes/projects');
 const app = express();
 const PORT = process.env.PORT || 5000;
 const { MONGODB_URI } = process.env;
-const allowedOrigins = process.env.CLIENT_ORIGIN
-  ? process.env.CLIENT_ORIGIN.split(',').map((origin) => origin.trim())
-  : undefined;
+function normalizeOrigin(origin) {
+  return origin ? origin.trim().replace(/\/$/, '') : origin;
+}
+
+const configuredOrigins = process.env.CLIENT_ORIGIN
+  ? process.env.CLIENT_ORIGIN
+      .split(',')
+      .map(normalizeOrigin)
+      .filter(Boolean)
+  : [];
+
+if ((process.env.NODE_ENV || 'development') !== 'production') {
+  configuredOrigins.push('http://localhost:3000', 'http://localhost:5000');
+}
+
+const allowedOrigins = Array.from(new Set(configuredOrigins.map(normalizeOrigin))).filter(Boolean);
 
 if (!MONGODB_URI) {
   console.error('Missing MONGODB_URI environment variable.');
@@ -22,7 +35,23 @@ if (!MONGODB_URI) {
 
 // Middleware
 app.use(cors({
-  origin: allowedOrigins || true,
+  origin(origin, callback) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const normalizedOrigin = normalizeOrigin(origin);
+
+    if (allowedOrigins.length === 0 || allowedOrigins.includes(normalizedOrigin)) {
+      return callback(null, true);
+    }
+
+    if ((process.env.NODE_ENV || 'development') !== 'production') {
+      console.warn(`Blocked CORS request from origin ${origin}`);
+    }
+
+    return callback(null, false);
+  },
   credentials: true,
 }));
 app.use(express.json());

@@ -53,6 +53,10 @@ const panophotoSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    levelId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
     linkedPhotos: {
       type: [linkSchema],
       default: [],

@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import ProjectCanvasMarker from '../Components/ProjectCanvasMarker';
-import ProjectPhotoThumbnail from '../Components/ProjectPhotoThumbnail';
+import ProjectPhotoBrowser from '../Components/ProjectPhotoBrowser';
 import '../CSS/styles.css';
 
+// normalizeId produces a stable string id from various link reference shapes.
 const normalizeId = (value) => {
   if (typeof value === 'string') {
     return value;
@@ -24,6 +25,7 @@ const normalizeId = (value) => {
   return value.toString();
 };
 
+// clamp01 forces numeric input into the [0, 1] range for canvas coordinates.
 const clamp01 = (value) => {
   const parsed = Number.parseFloat(value);
 
@@ -34,6 +36,9 @@ const clamp01 = (value) => {
   return 0;
 };
 
+const DEFAULT_CANVAS_ASPECT_RATIO = 0.75;
+
+// ProjectEditor coordinates managing pano photos, canvas layout, and linking UI.
 function ProjectEditor() {
   const apiBaseUrl = process.env.REACT_APP_API_BASE_URL || '';
   const navigate = useNavigate();
@@ -55,12 +60,16 @@ function ProjectEditor() {
     startPosition: null,
     position: null,
     hasMoved: false,
+    levelId: null,
   });
   const suppressClickRef = useRef(false);
   const [backgroundFile, setBackgroundFile] = useState(null);
   const [isBackgroundUploading, setIsBackgroundUploading] = useState(false);
   const [isBackgroundVisible, setIsBackgroundVisible] = useState(false);
   const [showCanvasLabels, setShowCanvasLabels] = useState(true);
+  const [canvasAspectRatio, setCanvasAspectRatio] = useState(DEFAULT_CANVAS_ASPECT_RATIO);
+  const [activeLevelId, setActiveLevelId] = useState(null);
+  const [isLevelRequestPending, setIsLevelRequestPending] = useState(false);
   const backgroundInputRef = useRef(null);
 
   const selectedPhoto = useMemo(
@@ -73,11 +82,99 @@ function ProjectEditor() {
     [photos, linkSourceId]
   );
 
+  const levels = useMemo(() => {
+    if (!Array.isArray(activeProject?.levels)) {
+      return [];
+    }
+
+    return activeProject.levels;
+  }, [activeProject?.levels]);
+
+  useEffect(() => {
+    if (!levels.length) {
+      setActiveLevelId(null);
+      return;
+    }
+
+    const normalizedIds = levels
+      .map((level) => normalizeId(level?._id))
+      .filter((value) => Boolean(value));
+
+    if (normalizedIds.length === 0) {
+      setActiveLevelId(null);
+      return;
+    }
+
+    setActiveLevelId((prev) => {
+      if (prev && normalizedIds.includes(prev)) {
+        return prev;
+      }
+      return normalizedIds[0];
+    });
+  }, [levels]);
+
+  const activeLevel = useMemo(() => {
+    if (!levels.length) {
+      return null;
+    }
+
+    if (activeLevelId) {
+      const match = levels.find((level) => normalizeId(level?._id) === activeLevelId);
+      if (match) {
+        return match;
+      }
+    }
+
+    return levels[0] || null;
+  }, [levels, activeLevelId]);
+
+  const resolvedActiveLevelId = useMemo(
+    () => (activeLevel ? normalizeId(activeLevel._id) : null),
+    [activeLevel]
+  );
+
+  const selectedPhotoLevelId = normalizeId(selectedPhoto?.levelId);
+  const isSelectedOnActiveLevel = Boolean(
+    selectedPhotoLevelId && resolvedActiveLevelId && selectedPhotoLevelId === resolvedActiveLevelId
+  );
+
+  const visiblePhotos = useMemo(() => {
+    if (!resolvedActiveLevelId) {
+      return [];
+    }
+
+    return photos.filter((photo) => normalizeId(photo.levelId) === resolvedActiveLevelId);
+  }, [photos, resolvedActiveLevelId]);
+
+  const visiblePhotoMap = useMemo(() => {
+    const map = new Map();
+
+    visiblePhotos.forEach((photo) => {
+      map.set(photo._id, photo);
+    });
+
+    return map;
+  }, [visiblePhotos]);
+
+  const levelNameById = useMemo(() => {
+    const map = new Map();
+
+    levels.forEach((level) => {
+      const levelId = normalizeId(level?._id);
+
+      if (levelId) {
+        map.set(levelId, level.name || `Level ${(level.index ?? 0) + 1}`);
+      }
+    });
+
+    return map;
+  }, [levels]);
+
   const linkLines = useMemo(() => {
     const segments = [];
     const seenPairs = new Set();
 
-    photos.forEach((photo) => {
+    visiblePhotos.forEach((photo) => {
       if (!Array.isArray(photo.linkedPhotos) || photo.linkedPhotos.length === 0) {
         return;
       }
@@ -89,7 +186,7 @@ function ProjectEditor() {
           return;
         }
 
-        const partner = photos.find((candidate) => candidate._id === linkedId);
+        const partner = visiblePhotoMap.get(linkedId);
 
         if (!partner) {
           return;
@@ -113,7 +210,7 @@ function ProjectEditor() {
     });
 
     return segments;
-  }, [photos]);
+  }, [visiblePhotoMap, visiblePhotos]);
 
   const fallbackStartPhoto = useMemo(() => {
     if (!Array.isArray(photos) || photos.length === 0) {
@@ -148,11 +245,29 @@ function ProjectEditor() {
       photos.find((photo) => photo._id === resolvedStartPhotoId) || fallbackStartPhoto || null
     );
   }, [photos, resolvedStartPhotoId, fallbackStartPhoto]);
+  const resolvedBackgroundUrl =
+    (activeLevel && activeLevel.backgroundImageUrl) ||
+    ((activeLevel?.index ?? 0) === 0 ? activeProject?.canvasBackgroundImageUrl : null);
 
-  const isSelectedStoredStart = Boolean(selectedPhotoId && startPhotoId && selectedPhotoId === startPhotoId);
-  const hasBackgroundImage = Boolean(activeProject?.canvasBackgroundImageUrl);
+  const isSelectedStoredStart = Boolean(
+    selectedPhotoId && startPhotoId && selectedPhotoId === startPhotoId
+  );
+  const hasBackgroundImage = Boolean(resolvedBackgroundUrl);
   const shouldShowBackground = hasBackgroundImage && isBackgroundVisible;
+  const resolvedCanvasAspectRatio = useMemo(() => {
+    if (!Number.isFinite(canvasAspectRatio) || canvasAspectRatio <= 0) {
+      return DEFAULT_CANVAS_ASPECT_RATIO;
+    }
 
+    return Math.min(Math.max(canvasAspectRatio, 0.25), 4);
+  }, [canvasAspectRatio]);
+
+  const canvasPaddingStyle = useMemo(
+    () => ({ paddingTop: `${resolvedCanvasAspectRatio * 100}%` }),
+    [resolvedCanvasAspectRatio]
+  );
+
+  // loadActiveProject fetches currently active project metadata from the API.
   const loadActiveProject = useCallback(async () => {
     try {
       const response = await fetch(`${apiBaseUrl}/api/projects/active`, { credentials: 'include' });
@@ -173,6 +288,7 @@ function ProjectEditor() {
     }
   }, [apiBaseUrl]);
 
+  // loadPhotos pulls all pano photos for the active project.
   const loadPhotos = useCallback(
     async (projectId) => {
       if (!projectId) {
@@ -214,8 +330,48 @@ function ProjectEditor() {
       backgroundInputRef.current.value = '';
     }
     setBackgroundFile(null);
-    setIsBackgroundVisible(Boolean(activeProject?.canvasBackgroundImageUrl));
-  }, [activeProject?.canvasBackgroundImageUrl]);
+    setIsBackgroundVisible(Boolean(resolvedBackgroundUrl));
+  }, [resolvedBackgroundUrl]);
+
+  useEffect(() => {
+    const backgroundUrl = resolvedBackgroundUrl;
+
+    if (!backgroundUrl) {
+      setCanvasAspectRatio(DEFAULT_CANVAS_ASPECT_RATIO);
+      return;
+    }
+
+    let isMounted = true;
+    const image = new Image();
+
+    image.onload = () => {
+      if (!isMounted) {
+        return;
+      }
+
+      const width = Number.isFinite(image.naturalWidth) ? image.naturalWidth : 0;
+      const height = Number.isFinite(image.naturalHeight) ? image.naturalHeight : 0;
+      const ratio = width > 0 ? height / width : DEFAULT_CANVAS_ASPECT_RATIO;
+
+      if (Number.isFinite(ratio) && ratio > 0) {
+        setCanvasAspectRatio(ratio);
+      } else {
+        setCanvasAspectRatio(DEFAULT_CANVAS_ASPECT_RATIO);
+      }
+    };
+
+    image.onerror = () => {
+      if (isMounted) {
+        setCanvasAspectRatio(DEFAULT_CANVAS_ASPECT_RATIO);
+      }
+    };
+
+    image.src = backgroundUrl;
+
+    return () => {
+      isMounted = false;
+    };
+  }, [resolvedBackgroundUrl]);
 
   useEffect(() => {
     if (activeProject?._id) {
@@ -234,10 +390,16 @@ function ProjectEditor() {
     }
   }, [selectedPhotoId]);
 
+  useEffect(() => {
+    setLinkSourceId(null);
+  }, [resolvedActiveLevelId]);
+
+  // handleFileChange caches selected upload files before submit.
   const handleFileChange = (event) => {
     setUploadFiles(Array.from(event.target.files || []));
   };
 
+  // handleUpload posts selected pano images and refreshes the list on success.
   const handleUpload = async (event) => {
     event.preventDefault();
 
@@ -284,17 +446,24 @@ function ProjectEditor() {
     }
   };
 
+  // handleBackgroundFileChange tracks the chosen background image file.
   const handleBackgroundFileChange = useCallback((event) => {
     const file = event.target?.files && event.target.files[0] ? event.target.files[0] : null;
     setBackgroundFile(file);
     setStatusMessage(null);
   }, [setBackgroundFile, setStatusMessage]);
 
+  // handleBackgroundUpload sends the canvas background to the server.
   const handleBackgroundUpload = useCallback(async (event) => {
     event.preventDefault();
 
     if (!activeProject?._id) {
       setStatusMessage({ type: 'error', message: 'Create or activate a project before uploading a background.' });
+      return;
+    }
+
+    if (!resolvedActiveLevelId) {
+      setStatusMessage({ type: 'error', message: 'Select a level before uploading a background.' });
       return;
     }
 
@@ -305,6 +474,7 @@ function ProjectEditor() {
 
     const formData = new FormData();
     formData.append('background', backgroundFile);
+    formData.append('levelId', resolvedActiveLevelId);
 
     setIsBackgroundUploading(true);
     setStatusMessage(null);
@@ -325,8 +495,14 @@ function ProjectEditor() {
 
       const payload = await response.json();
       setActiveProject(payload.project);
+      if (payload.levelId) {
+        setActiveLevelId(normalizeId(payload.levelId));
+      }
       setIsBackgroundVisible(true);
-      setStatusMessage({ type: 'success', message: 'Canvas background updated.' });
+      setStatusMessage({
+        type: 'success',
+        message: `Background updated for ${activeLevel?.name || 'the active level'}.`,
+      });
       setBackgroundFile(null);
       if (backgroundInputRef.current) {
         backgroundInputRef.current.value = '';
@@ -336,8 +512,19 @@ function ProjectEditor() {
     } finally {
       setIsBackgroundUploading(false);
     }
-  }, [activeProject, apiBaseUrl, backgroundFile, setActiveProject, setIsBackgroundVisible, setStatusMessage]);
+  }, [
+    activeLevel,
+    activeProject,
+    apiBaseUrl,
+    backgroundFile,
+    resolvedActiveLevelId,
+    setActiveLevelId,
+    setActiveProject,
+    setIsBackgroundVisible,
+    setStatusMessage,
+  ]);
 
+  // mergeUpdatedPhotos applies partial API updates to the local photo list.
   const mergeUpdatedPhotos = useCallback((updatedList) => {
     if (!Array.isArray(updatedList) || updatedList.length === 0) {
       return;
@@ -349,17 +536,27 @@ function ProjectEditor() {
     });
   }, []);
 
+  // handleDeleteBackground removes the stored canvas background image.
   const handleDeleteBackground = useCallback(async () => {
     if (!activeProject?._id) {
       return;
     }
 
-    if (!hasBackgroundImage) {
-      setStatusMessage({ type: 'info', message: 'No background image to remove.' });
+    if (!resolvedActiveLevelId) {
+      setStatusMessage({ type: 'error', message: 'Select a level before removing its background.' });
       return;
     }
 
-    if (!window.confirm('Remove the canvas background image?')) {
+    if (!hasBackgroundImage) {
+      setStatusMessage({ type: 'info', message: 'No background image to remove for this level.' });
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Remove the background image for ${activeLevel?.name || 'this level'}?`
+      )
+    ) {
       return;
     }
 
@@ -367,10 +564,13 @@ function ProjectEditor() {
     setStatusMessage(null);
 
     try {
-      const response = await fetch(`${apiBaseUrl}/api/projects/${activeProject._id}/background`, {
+      const response = await fetch(
+        `${apiBaseUrl}/api/projects/${activeProject._id}/background?levelId=${resolvedActiveLevelId}`,
+        {
         method: 'DELETE',
         credentials: 'include',
-      });
+        }
+      );
 
       if (!response.ok) {
         const errorBody = await response
@@ -381,19 +581,37 @@ function ProjectEditor() {
 
       const payload = await response.json();
       setActiveProject(payload.project);
+      if (payload.levelId) {
+        setActiveLevelId(normalizeId(payload.levelId));
+      }
       setIsBackgroundVisible(false);
       setBackgroundFile(null);
       if (backgroundInputRef.current) {
         backgroundInputRef.current.value = '';
       }
-      setStatusMessage({ type: 'success', message: 'Canvas background removed.' });
+      setStatusMessage({
+        type: 'success',
+        message: `Background removed from ${activeLevel?.name || 'the active level'}.`,
+      });
     } catch (error) {
       setStatusMessage({ type: 'error', message: error.message });
     } finally {
       setIsBackgroundUploading(false);
     }
-  }, [activeProject, apiBaseUrl, hasBackgroundImage, setActiveProject, setBackgroundFile, setIsBackgroundVisible, setStatusMessage]);
+  }, [
+    activeLevel,
+    activeProject,
+    apiBaseUrl,
+    hasBackgroundImage,
+    resolvedActiveLevelId,
+    setActiveLevelId,
+    setActiveProject,
+    setBackgroundFile,
+    setIsBackgroundVisible,
+    setStatusMessage,
+  ]);
 
+  // handleToggleBackgroundVisibility toggles whether the background is shown on canvas.
   const handleToggleBackgroundVisibility = useCallback(() => {
     if (!hasBackgroundImage) {
       return;
@@ -409,14 +627,22 @@ function ProjectEditor() {
     });
   }, [hasBackgroundImage, setIsBackgroundVisible, setStatusMessage]);
 
+  // handleToggleCanvasLabels shows or hides marker name labels on the canvas.
   const handleToggleCanvasLabels = useCallback((event) => {
     setShowCanvasLabels(event.target.checked);
   }, [setShowCanvasLabels]);
 
+  // persistPhotoPosition saves marker drag results and syncs neighbor azimuths.
   const persistPhotoPosition = useCallback(
-    async (photoId, xPosition, yPosition, fallbackPosition) => {
+    async (photoId, xPosition, yPosition, fallbackState, options = {}) => {
       if (!photoId) {
         return;
+      }
+
+      const payload = { xPosition, yPosition };
+
+      if (Object.prototype.hasOwnProperty.call(options, 'levelId')) {
+        payload.levelId = options.levelId;
       }
 
       try {
@@ -424,7 +650,7 @@ function ProjectEditor() {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ xPosition, yPosition }),
+          body: JSON.stringify(payload),
         });
 
         if (!response.ok) {
@@ -449,17 +675,36 @@ function ProjectEditor() {
         }
 
         mergeUpdatedPhotos(updates);
-        setStatusMessage({ type: 'success', message: 'Photo position updated.' });
+        setStatusMessage({
+          type: 'success',
+          message: options.successMessage || 'Photo position updated.',
+        });
       } catch (error) {
         setStatusMessage({ type: 'error', message: error.message });
 
-        if (fallbackPosition && Number.isFinite(fallbackPosition.x) && Number.isFinite(fallbackPosition.y)) {
+        if (fallbackState) {
           setPhotos((prev) =>
-            prev.map((photo) =>
-              photo._id === photoId
-                ? { ...photo, xPosition: fallbackPosition.x, yPosition: fallbackPosition.y }
-                : photo
-            )
+            prev.map((photo) => {
+              if (photo._id !== photoId) {
+                return photo;
+              }
+
+              const next = { ...photo };
+
+              if (Number.isFinite(fallbackState.x)) {
+                next.xPosition = fallbackState.x;
+              }
+
+              if (Number.isFinite(fallbackState.y)) {
+                next.yPosition = fallbackState.y;
+              }
+
+              if (Object.prototype.hasOwnProperty.call(fallbackState, 'levelId')) {
+                next.levelId = fallbackState.levelId;
+              }
+
+              return next;
+            })
           );
         }
       }
@@ -467,6 +712,132 @@ function ProjectEditor() {
     [apiBaseUrl, mergeUpdatedPhotos, setPhotos, setStatusMessage]
   );
 
+  const handleSelectLevel = useCallback(
+    (levelId) => {
+      const normalizedLevelId = normalizeId(levelId);
+
+      if (!normalizedLevelId) {
+        return;
+      }
+
+      setActiveLevelId(normalizedLevelId);
+      setStatusMessage(null);
+
+      setSelectedPhotoId((current) => {
+        if (!current) {
+          return current;
+        }
+
+        const selected = photos.find((photo) => photo._id === current);
+        const selectedLevelId = normalizeId(selected?.levelId);
+
+        if (selectedLevelId && selectedLevelId === normalizedLevelId) {
+          return current;
+        }
+
+        return null;
+      });
+
+      setLinkSourceId(null);
+    },
+    [photos, setLinkSourceId, setStatusMessage]
+  );
+
+  const handleAddLevel = useCallback(async () => {
+    if (!activeProject?._id) {
+      setStatusMessage({ type: 'error', message: 'Create or activate a project before adding levels.' });
+      return;
+    }
+
+    setIsLevelRequestPending(true);
+    setStatusMessage(null);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/projects/${activeProject._id}/levels`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({}),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to create level');
+      }
+
+      const payload = await response.json();
+      setActiveProject(payload.project);
+
+      const createdLevelId = normalizeId(payload.levelId);
+      if (createdLevelId) {
+        setActiveLevelId(createdLevelId);
+      } else if (Array.isArray(payload.project?.levels) && payload.project.levels.length > 0) {
+        const fallbackLevel = payload.project.levels[payload.project.levels.length - 1];
+        setActiveLevelId(normalizeId(fallbackLevel?._id));
+      }
+
+      setStatusMessage({ type: 'success', message: 'Level created.' });
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    } finally {
+      setIsLevelRequestPending(false);
+    }
+  }, [activeProject, apiBaseUrl, setActiveLevelId, setActiveProject, setStatusMessage]);
+
+  const handleRenameLevel = useCallback(async () => {
+    if (!activeProject?._id || !resolvedActiveLevelId) {
+      setStatusMessage({ type: 'error', message: 'Select a level before renaming it.' });
+      return;
+    }
+
+    const currentName = activeLevel?.name || '';
+    const nextName = window.prompt('Enter a new level name:', currentName);
+
+    if (nextName === null) {
+      return;
+    }
+
+    const trimmed = nextName.trim();
+
+    if (!trimmed) {
+      setStatusMessage({ type: 'error', message: 'Level name cannot be empty.' });
+      return;
+    }
+
+    setIsLevelRequestPending(true);
+    setStatusMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/api/projects/${activeProject._id}/levels/${resolvedActiveLevelId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ name: trimmed }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to rename level');
+      }
+
+      const payload = await response.json();
+      setActiveProject(payload.project);
+      setStatusMessage({ type: 'success', message: `Renamed level to "${trimmed}".` });
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    } finally {
+      setIsLevelRequestPending(false);
+    }
+  }, [activeLevel, activeProject, apiBaseUrl, resolvedActiveLevelId, setActiveProject, setStatusMessage]);
+
+  // createLinkBetweenPhotos links two pano photos via the API and updates state.
   const createLinkBetweenPhotos = useCallback(
     async (sourceId, targetId) => {
       setIsLinkPending(true);
@@ -506,6 +877,7 @@ function ProjectEditor() {
     [apiBaseUrl, mergeUpdatedPhotos, photos]
   );
 
+  // handleSetStartPhoto assigns the selected photo as the project's start scene.
   const handleSetStartPhoto = useCallback(async () => {
     if (!selectedPhotoId || !activeProject?._id) {
       setStatusMessage({ type: 'error', message: 'Select a photo before setting the start scene.' });
@@ -550,6 +922,190 @@ function ProjectEditor() {
     startPhotoId,
   ]);
 
+  const handlePlacePhotoOnLevel = useCallback(
+    async (xPosition, yPosition) => {
+      if (!selectedPhotoId) {
+        setStatusMessage({ type: 'error', message: 'Select a photo before placing it on the canvas.' });
+        return;
+      }
+
+      if (!resolvedActiveLevelId) {
+        setStatusMessage({ type: 'error', message: 'Select a level before placing a photo on it.' });
+        return;
+      }
+
+      const targetPhoto = photos.find((photo) => photo._id === selectedPhotoId);
+
+      if (!targetPhoto) {
+        setStatusMessage({ type: 'error', message: 'Unable to locate the selected photo.' });
+        return;
+      }
+
+      const currentLevelId = normalizeId(targetPhoto.levelId) || null;
+
+      const fallbackX = clamp01(targetPhoto?.xPosition ?? 0);
+      const fallbackY = clamp01(targetPhoto?.yPosition ?? 0);
+
+      const hasCustomX = Number.isFinite(xPosition);
+      const hasCustomY = Number.isFinite(yPosition);
+
+      const nextX = hasCustomX ? clamp01(xPosition) : fallbackX > 0 ? fallbackX : 0.5;
+      const nextY = hasCustomY ? clamp01(yPosition) : fallbackY > 0 ? fallbackY : 0.5;
+
+      setPhotos((prev) =>
+        prev.map((photo) =>
+          photo._id === selectedPhotoId
+            ? {
+                ...photo,
+                xPosition: nextX,
+                yPosition: nextY,
+                levelId: resolvedActiveLevelId,
+              }
+            : photo
+        )
+      );
+
+      await persistPhotoPosition(selectedPhotoId, nextX, nextY, {
+        x: fallbackX,
+        y: fallbackY,
+        levelId: currentLevelId,
+      }, {
+        levelId: resolvedActiveLevelId,
+        successMessage: `Placed "${targetPhoto.name || 'Photo'}" on ${
+          activeLevel?.name || 'the active level'
+        }.`,
+      });
+
+      setLinkSourceId(null);
+    },
+    [
+      activeLevel,
+      persistPhotoPosition,
+      photos,
+      resolvedActiveLevelId,
+      selectedPhotoId,
+      setLinkSourceId,
+      setPhotos,
+      setStatusMessage,
+    ]
+  );
+
+  const handleUnplacePhoto = useCallback(async () => {
+    if (!selectedPhotoId) {
+      setStatusMessage({ type: 'error', message: 'Select a photo before unplacing it.' });
+      return;
+    }
+
+    const targetPhoto = photos.find((photo) => photo._id === selectedPhotoId);
+
+    if (!targetPhoto) {
+      setStatusMessage({ type: 'error', message: 'Unable to locate the selected photo.' });
+      return;
+    }
+
+    const currentLevelId = normalizeId(targetPhoto.levelId);
+
+    if (!currentLevelId) {
+      setStatusMessage({ type: 'info', message: 'Photo is already unplaced.' });
+      return;
+    }
+
+    const fallback = {
+      x: clamp01(targetPhoto?.xPosition ?? 0),
+      y: clamp01(targetPhoto?.yPosition ?? 0),
+      levelId: currentLevelId,
+    };
+
+    setPhotos((prev) =>
+      prev.map((photo) =>
+        photo._id === selectedPhotoId
+          ? {
+              ...photo,
+              xPosition: 0,
+              yPosition: 0,
+              levelId: null,
+            }
+          : photo
+      )
+    );
+
+    await persistPhotoPosition(selectedPhotoId, 0, 0, fallback, {
+      levelId: null,
+      successMessage: `Removed "${targetPhoto.name || 'Photo'}" from all levels.`,
+    });
+
+    setLinkSourceId(null);
+  }, [persistPhotoPosition, photos, selectedPhotoId, setLinkSourceId, setPhotos, setStatusMessage]);
+
+  const handleCanvasClick = useCallback(
+    (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      const target = event.target;
+
+      if (target instanceof Element && target.closest('.project-canvas-marker')) {
+        return;
+      }
+
+      if (linkSourceId) {
+        setStatusMessage({
+          type: 'info',
+          message: 'Select another photo to complete the link.',
+        });
+        return;
+      }
+
+      if (!selectedPhotoId) {
+        setStatusMessage({
+          type: 'error',
+          message: 'Select a photo from the list before placing it on the canvas.',
+        });
+        return;
+      }
+
+      if (!resolvedActiveLevelId) {
+        setStatusMessage({
+          type: 'error',
+          message: 'Create or select a level before placing a photo.',
+        });
+        return;
+      }
+
+      const canvas = canvasRef.current;
+
+      if (!canvas) {
+        return;
+      }
+
+      const bounds = canvas.getBoundingClientRect();
+      const width = bounds.width;
+      const height = bounds.height;
+
+      if (width <= 0 || height <= 0) {
+        return;
+      }
+
+      const nativeEvent = event.nativeEvent;
+      const clientX = nativeEvent.clientX;
+      const clientY = nativeEvent.clientY;
+
+      const relativeX = (clientX - bounds.left) / width;
+      const relativeY = (clientY - bounds.top) / height;
+
+      handlePlacePhotoOnLevel(relativeX, relativeY);
+    },
+    [
+      handlePlacePhotoOnLevel,
+      linkSourceId,
+      resolvedActiveLevelId,
+      selectedPhotoId,
+      setStatusMessage,
+    ]
+  );
+
+  // handleOpenViewer launches the viewer preloaded with the start scene id.
   const handleOpenViewer = useCallback(() => {
     if (!resolvedStartPhotoId) {
       setStatusMessage({ type: 'error', message: 'Add a pano photo before opening the viewer.' });
@@ -562,6 +1118,7 @@ function ProjectEditor() {
     });
   }, [navigate, resolvedStartPhotoId]);
 
+  // handlePhotoSelect manages selection, link creation flow, and status resets.
   const handlePhotoSelect = useCallback(
     (photoId) => {
       if (isLinkPending || deletingPhotoIds.includes(photoId)) {
@@ -579,11 +1136,27 @@ function ProjectEditor() {
         return;
       }
 
+      const targetPhoto = photos.find((photo) => photo._id === photoId);
+      const targetLevelId = normalizeId(targetPhoto?.levelId);
+
+      if (targetLevelId && targetLevelId !== resolvedActiveLevelId) {
+        setActiveLevelId(targetLevelId);
+      }
+
       setSelectedPhotoId(photoId);
       setStatusMessage(null);
     },
-    [createLinkBetweenPhotos, deletingPhotoIds, isLinkPending, linkSourceId]
+    [
+      createLinkBetweenPhotos,
+      deletingPhotoIds,
+      isLinkPending,
+      linkSourceId,
+      photos,
+      resolvedActiveLevelId,
+      setActiveLevelId,
+    ]
   );
+  // handleDeletePhoto removes a pano photo and cleans up related state.
   const handleDeletePhoto = useCallback(
     async (photoId) => {
       const targetPhoto = photos.find((photo) => photo._id === photoId);
@@ -664,6 +1237,7 @@ function ProjectEditor() {
   );
 
 
+  // handleMarkerClick selects a marker while suppressing post-drag clicks.
   const handleMarkerClick = useCallback(
     (event, photoId) => {
       if (suppressClickRef.current) {
@@ -679,6 +1253,7 @@ function ProjectEditor() {
     [handlePhotoSelect]
   );
 
+  // handleLinkButtonClick toggles the linking workflow for the selected photo.
   const handleLinkButtonClick = () => {
     if (!selectedPhotoId || isLinkPending) {
       return;
@@ -699,6 +1274,7 @@ function ProjectEditor() {
     }
   };
 
+  // handleUnlinkPhoto disconnects two linked photos via the API.
   const handleUnlinkPhoto = useCallback(
     async (targetId) => {
       if (!selectedPhotoId || isLinkPending) {
@@ -740,6 +1316,7 @@ function ProjectEditor() {
     [apiBaseUrl, isLinkPending, mergeUpdatedPhotos, photos, selectedPhoto, selectedPhotoId]
   );
 
+  // handleMarkerDragStart prepares drag state when a marker grab begins.
   const handleMarkerDragStart = useCallback(
     (event, photoId) => {
       if (!canvasRef.current) {
@@ -758,6 +1335,7 @@ function ProjectEditor() {
       const targetPhoto = photos.find((photo) => photo._id === photoId);
       const startX = clamp01(targetPhoto?.xPosition ?? 0);
       const startY = clamp01(targetPhoto?.yPosition ?? 0);
+      const startLevelId = normalizeId(targetPhoto?.levelId) || null;
 
       dragStateRef.current = {
         photoId,
@@ -765,6 +1343,7 @@ function ProjectEditor() {
         startPosition: { x: startX, y: startY },
         position: { x: startX, y: startY },
         hasMoved: false,
+        levelId: startLevelId,
       };
 
       setDraggingPhotoId(photoId);
@@ -773,6 +1352,7 @@ function ProjectEditor() {
     [canvasRef, deletingPhotoIds, isLinkPending, linkSourceId, photos, setSelectedPhotoId, setStatusMessage]
   );
 
+  // handleMarkerDrag updates marker coordinates in real time during dragging.
   const handleMarkerDrag = useCallback(
     (event, photoId) => {
       const dragState = dragStateRef.current;
@@ -832,6 +1412,7 @@ function ProjectEditor() {
     [canvasRef, setPhotos]
   );
 
+  // handleMarkerDragEnd finalizes a drag action and persists the new position.
   const handleMarkerDragEnd = useCallback(
     (event, metadata, photoId) => {
       const dragState = dragStateRef.current;
@@ -847,6 +1428,14 @@ function ProjectEditor() {
       const startPosition = dragState.startPosition;
       const finalPosition = dragState.position;
       const hasMoved = dragState.hasMoved;
+      const fallbackState = {
+        x: startPosition?.x,
+        y: startPosition?.y,
+      };
+
+      if (Object.prototype.hasOwnProperty.call(dragState, 'levelId')) {
+        fallbackState.levelId = dragState.levelId;
+      }
 
       dragStateRef.current = {
         photoId: null,
@@ -854,6 +1443,7 @@ function ProjectEditor() {
         startPosition: null,
         position: null,
         hasMoved: false,
+        levelId: null,
       };
 
       setDraggingPhotoId(null);
@@ -877,10 +1467,12 @@ function ProjectEditor() {
           suppressClickRef.current = false;
         }, 0);
 
-        persistPhotoPosition(photoId, finalPosition.x, finalPosition.y, startPosition);
+        persistPhotoPosition(photoId, finalPosition.x, finalPosition.y, fallbackState, {
+          levelId: resolvedActiveLevelId,
+        });
       }
     },
-    [persistPhotoPosition, setDraggingPhotoId, setPhotos]
+    [persistPhotoPosition, resolvedActiveLevelId, setDraggingPhotoId, setPhotos]
   );
 
   if (!activeProject) {
@@ -948,10 +1540,13 @@ function ProjectEditor() {
           </form>
           <div className="project-background-panel">
             <h3>Canvas Background</h3>
+            <p className="project-background-level-label">
+              Level: {activeLevel?.name || 'No level selected'}
+            </p>
             {hasBackgroundImage ? (
               <div
                 className="project-background-preview"
-                style={{ backgroundImage: `url(${activeProject.canvasBackgroundImageUrl})` }}
+                style={{ backgroundImage: `url(${resolvedBackgroundUrl})` }}
               />
             ) : (
               <p className="canvas-helper-text">No background image uploaded yet.</p>
@@ -987,43 +1582,68 @@ function ProjectEditor() {
         </section>
 
         <div className="project-editor-body">
-          <aside className="project-photo-panel">
-            <h3>Photos</h3>
-            {photos.length === 0 ? (
-              <p className="panophoto-status">No photos in this project yet.</p>
-            ) : (
-              <div className="project-photo-grid">
-                {photos.map((photo) => {
-                  const imageUrl = photo.thumbnailUrl || photo.imageUrl;
-                  const isDeleting = deletingPhotoIds.includes(photo._id);
-
-                  return (
-                    <ProjectPhotoThumbnail
-                      key={photo._id}
-                      label={photo.name}
-                      imageUrl={imageUrl}
-                      isSelected={photo._id === selectedPhotoId}
-                      isLinkSource={linkSourceId === photo._id}
-                      isStart={photo._id === resolvedStartPhotoId}
-                      isBusy={isDeleting}
-                      onClick={() => handlePhotoSelect(photo._id)}
-                      onDelete={() => handleDeletePhoto(photo._id)}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </aside>
+          <ProjectPhotoBrowser
+            photos={photos}
+            selectedPhotoId={selectedPhotoId}
+            resolvedStartPhotoId={resolvedStartPhotoId}
+            linkSourceId={linkSourceId}
+            deletingPhotoIds={deletingPhotoIds}
+            resolvedActiveLevelId={resolvedActiveLevelId}
+            levelNameById={levelNameById}
+            onSelectPhoto={handlePhotoSelect}
+            onDeletePhoto={handleDeletePhoto}
+            normalizeId={normalizeId}
+          />
 
           <div className="project-canvas-wrapper">
+            <div className="project-level-tabs">
+              <div className="project-level-tab-list">
+                {levels.map((level) => {
+                  const levelId = normalizeId(level._id);
+                  const isActiveLevel = levelId === resolvedActiveLevelId;
+
+                  return (
+                    <button
+                      type="button"
+                      key={level._id || levelId}
+                      className={`project-level-tab${isActiveLevel ? ' active' : ''}`}
+                      onClick={() => handleSelectLevel(levelId)}
+                      disabled={!levelId || (isLevelRequestPending && !isActiveLevel)}
+                    >
+                      {level.name}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  className="project-level-tab add"
+                  onClick={handleAddLevel}
+                  disabled={isLevelRequestPending}
+                >
+                  + Add Level
+                </button>
+              </div>
+              <div className="project-level-tab-actions">
+                <button
+                  type="button"
+                  onClick={handleRenameLevel}
+                  disabled={!resolvedActiveLevelId || isLevelRequestPending}
+                >
+                  Rename Level
+                </button>
+              </div>
+            </div>
+
             <div
               ref={canvasRef}
               className={`project-canvas${shouldShowBackground ? ' has-background' : ''}`}
+              style={canvasPaddingStyle}
+              onClick={handleCanvasClick}
             >
               {shouldShowBackground ? (
                 <div
                   className="project-canvas-background"
-                  style={{ backgroundImage: `url(${activeProject.canvasBackgroundImageUrl})` }}
+                  style={{ backgroundImage: `url(${resolvedBackgroundUrl})` }}
                 />
               ) : null}
               <svg className="project-canvas-links" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -1038,7 +1658,7 @@ function ProjectEditor() {
                   />
                 ))}
               </svg>
-              {photos.map((photo) => (
+              {visiblePhotos.map((photo) => (
                 <ProjectCanvasMarker
                   key={photo._id}
                   label={photo.name}
@@ -1073,6 +1693,13 @@ function ProjectEditor() {
                 disabled={!selectedPhotoId || isLinkPending || isSelectedStoredStart}
               >
                 {isSelectedStoredStart ? 'Start Scene' : 'Set as Start'}
+              </button>
+              <button
+                type="button"
+                onClick={handleUnplacePhoto}
+                disabled={!selectedPhotoId || !isSelectedOnActiveLevel || isLinkPending}
+              >
+                Unplace
               </button>
               <label className="project-canvas-toggle">
                 <input
@@ -1121,7 +1748,7 @@ function ProjectEditor() {
             ) : null}
 
             <p className="canvas-helper-text">
-              Select a photo, then drag its marker on the canvas to update its position.
+              Select a photo, click the canvas to place it on this level, or drag existing markers to refine positions.
             </p>
           </div>
         </div>

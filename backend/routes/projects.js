@@ -6,6 +6,7 @@ const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getS3Client } = require('../services/s3Client');
 const Project = require('../models/Project');
 const Panophoto = require('../models/Panophoto');
+const { ensureProjectLevels, loadProjectLevel } = require('../utils/projectLevels');
 
 async function ensureStartPanophoto(project) {
   if (!project) {
@@ -43,7 +44,6 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
 });
-
 const slugify = (value) => {
   if (!value) {
     return 'item';
@@ -62,11 +62,11 @@ const slugify = (value) => {
 const projectPopulation = [
   {
     path: 'panophotos',
-    select: 'name imageUrl xPosition yPosition',
+    select: 'name imageUrl thumbnailUrl xPosition yPosition levelId',
   },
   {
     path: 'startPanophoto',
-    select: 'name imageUrl xPosition yPosition createdAt',
+    select: 'name imageUrl xPosition yPosition createdAt levelId',
   },
 ];
 
@@ -77,6 +77,7 @@ router.get('/', async (req, res) => {
     await Promise.all(
       projects.map(async (project) => {
         await ensureStartPanophoto(project);
+        await ensureProjectLevels(project);
         await project.populate(projectPopulation);
       })
     );
@@ -97,6 +98,7 @@ router.get('/active', async (req, res) => {
     }
 
     await ensureStartPanophoto(project);
+    await ensureProjectLevels(project);
     await project.populate(projectPopulation);
 
     return res.json({ project });
@@ -122,6 +124,7 @@ router.post('/', async (req, res) => {
       isActive: true,
     });
 
+    await ensureProjectLevels(project);
     await project.populate(projectPopulation);
 
     return res.status(201).json({
@@ -156,6 +159,7 @@ router.patch('/:id/activate', async (req, res) => {
     let project = await Project.findById(id);
 
     await ensureStartPanophoto(project);
+  await ensureProjectLevels(project);
     await project.populate(projectPopulation);
 
     return res.json({ message: 'Project activated', project });
@@ -191,6 +195,7 @@ router.delete('/:id', async (req, res) => {
       nextProject.isActive = true;
       await nextProject.save();
       await ensureStartPanophoto(nextProject);
+      await ensureProjectLevels(nextProject);
     }
 
     return res.json({ message: 'Project deleted' });
@@ -233,6 +238,7 @@ router.patch('/:id/start', async (req, res) => {
     project.startPanophoto = panophoto._id;
     await project.save();
 
+  await ensureProjectLevels(project);
     await project.populate(projectPopulation);
 
     return res.json({ message: 'Start photo updated', project });
@@ -244,10 +250,7 @@ router.patch('/:id/start', async (req, res) => {
 
 router.patch('/:id/background', upload.single('background'), async (req, res) => {
   const { id } = req.params;
-
-  if (!mongoose.isValidObjectId(id)) {
-    return res.status(400).json({ message: 'Invalid project id' });
-  }
+  const levelIdInput = req.body?.levelId || req.query?.levelId || null;
 
   if (!req.file) {
     return res.status(400).json({ message: 'Background image is required' });
@@ -264,26 +267,18 @@ router.patch('/:id/background', upload.single('background'), async (req, res) =>
     return res.status(500).json({ message: 'S3 bucket not configured' });
   }
 
-  let project;
+  const { error, project, level } = await loadProjectLevel(id, levelIdInput);
 
-  try {
-    project = await Project.findById(id);
-
-    if (!project) {
-      return res.status(404).json({ message: 'Project not found' });
-    }
-  } catch (error) {
-    console.error('Failed to load project for background update:', error);
-    return res.status(500).json({ message: 'Unable to update project background' });
+  if (error) {
+    return res.status(error.status || 500).json({ message: error.message });
   }
 
   const file = req.file;
   const extension = path.extname(file.originalname) || '.bin';
   const originalBase = path.basename(file.originalname, extension);
   const projectSlug = slugify(project.name || 'project');
-  const safeBase = slugify(originalBase) || 'background';
-  const objectKey = `project-backgrounds/${projectSlug}_${safeBase}_${Date.now()}${extension}`;
-
+  const levelSlug = slugify(level.name || `level_${(level.index ?? 0) + 1}`);
+  const objectKey = `project-level-backgrounds/${projectSlug}_${levelSlug}_${Date.now()}${extension}`;
   const s3Client = getS3Client();
 
   try {
@@ -295,22 +290,29 @@ router.patch('/:id/background', upload.single('background'), async (req, res) =>
         ContentType: file.mimetype,
       })
     );
-  } catch (error) {
-    console.error('Failed to upload project background to S3:', error);
+  } catch (uploadError) {
+    console.error('Failed to upload level background to S3:', uploadError);
     return res.status(502).json({ message: 'Failed to upload background image to storage' });
   }
 
-  const previousKey = project.canvasBackgroundImageS3Key;
+  const previousKey = level.backgroundImageS3Key;
   const imageUrl = `https://${bucketName}.s3.${region}.amazonaws.com/${objectKey}`;
+  const isFirstLevel = (level.index ?? 0) === 0;
 
-  project.canvasBackgroundImageUrl = imageUrl;
-  project.canvasBackgroundImageS3Key = objectKey;
+  level.backgroundImageUrl = imageUrl;
+  level.backgroundImageS3Key = objectKey;
+
+  if (isFirstLevel) {
+    project.canvasBackgroundImageUrl = imageUrl;
+    project.canvasBackgroundImageS3Key = objectKey;
+  }
 
   try {
     await project.save();
+    await ensureProjectLevels(project);
     await project.populate(projectPopulation);
-  } catch (error) {
-    console.error('Failed to save project background metadata:', error);
+  } catch (metadataError) {
+    console.error('Failed to save level background metadata:', metadataError);
     return res.status(500).json({ message: 'Failed to save background metadata' });
   }
 
@@ -322,20 +324,17 @@ router.patch('/:id/background', upload.single('background'), async (req, res) =>
           Key: previousKey,
         })
       );
-    } catch (error) {
-      console.warn('Failed to remove previous project background from S3:', error);
+    } catch (cleanupError) {
+      console.warn('Failed to remove previous level background from S3:', cleanupError);
     }
   }
 
-  return res.json({ message: 'Project background updated', project });
+  return res.json({ message: 'Level background updated', project, levelId: level._id });
 });
 
 router.delete('/:id/background', async (req, res) => {
   const { id } = req.params;
-
-  if (!mongoose.isValidObjectId(id)) {
-    return res.status(400).json({ message: 'Invalid project id' });
-  }
+  const levelIdInput = req.query?.levelId || req.body?.levelId || null;
 
   const bucketName = process.env.S3_BUCKET_NAME;
 
@@ -343,24 +342,17 @@ router.delete('/:id/background', async (req, res) => {
     return res.status(500).json({ message: 'S3 bucket not configured' });
   }
 
-  let project;
+  const { error, project, level } = await loadProjectLevel(id, levelIdInput);
 
-  try {
-    project = await Project.findById(id);
-
-    if (!project) {
-      return res.status(404).json({ message: 'Project not found' });
-    }
-  } catch (error) {
-    console.error('Failed to load project for background removal:', error);
-    return res.status(500).json({ message: 'Unable to remove project background' });
+  if (error) {
+    return res.status(error.status || 500).json({ message: error.message });
   }
 
-  const existingKey = project.canvasBackgroundImageS3Key;
+  const existingKey = level.backgroundImageS3Key;
 
   if (!existingKey) {
     await project.populate(projectPopulation);
-    return res.json({ message: 'No background to remove', project });
+    return res.json({ message: 'No background to remove', project, levelId: level._id });
   }
 
   const s3Client = getS3Client();
@@ -372,23 +364,131 @@ router.delete('/:id/background', async (req, res) => {
         Key: existingKey,
       })
     );
-  } catch (error) {
-    console.error('Failed to delete project background from S3:', error);
+  } catch (deleteError) {
+    console.error('Failed to delete level background from S3:', deleteError);
     return res.status(502).json({ message: 'Failed to remove background image from storage' });
   }
 
-  project.canvasBackgroundImageUrl = null;
-  project.canvasBackgroundImageS3Key = null;
+  const isFirstLevel = (level.index ?? 0) === 0;
+
+  level.backgroundImageUrl = null;
+  level.backgroundImageS3Key = null;
+
+  if (isFirstLevel) {
+    project.canvasBackgroundImageUrl = null;
+    project.canvasBackgroundImageS3Key = null;
+  }
 
   try {
     await project.save();
+    await ensureProjectLevels(project);
     await project.populate(projectPopulation);
-  } catch (error) {
-    console.error('Failed to clear project background metadata:', error);
+  } catch (metadataError) {
+    console.error('Failed to clear level background metadata:', metadataError);
     return res.status(500).json({ message: 'Failed to clear background metadata' });
   }
 
-  return res.json({ message: 'Project background removed', project });
+  return res.json({ message: 'Level background removed', project, levelId: level._id });
+});
+
+router.post('/:id/levels', async (req, res) => {
+  const { id } = req.params;
+  const providedName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ message: 'Invalid project id' });
+  }
+
+  let project;
+
+  try {
+    project = await Project.findById(id);
+  } catch (error) {
+    console.error('Failed to load project for level creation:', error);
+    return res.status(500).json({ message: 'Unable to load project' });
+  }
+
+  if (!project) {
+    return res.status(404).json({ message: 'Project not found' });
+  }
+
+  await ensureProjectLevels(project);
+
+  const nextIndex = Array.isArray(project.levels) ? project.levels.length : 0;
+  const baseName = providedName || `Level ${nextIndex + 1}`;
+  const existingNames = new Set(
+    (project.levels || []).map((level) => level.name?.toLowerCase()).filter(Boolean)
+  );
+
+  let finalName = baseName;
+  let suffix = 2;
+
+  while (existingNames.has(finalName.toLowerCase())) {
+    finalName = `${baseName} ${suffix}`;
+    suffix += 1;
+  }
+
+  project.levels.push({
+    name: finalName,
+    index: nextIndex,
+    backgroundImageUrl: null,
+    backgroundImageS3Key: null,
+  });
+
+  try {
+    await project.save();
+    await ensureProjectLevels(project);
+    await project.populate(projectPopulation);
+  } catch (error) {
+    console.error('Failed to create project level:', error);
+    return res.status(500).json({ message: 'Unable to create level' });
+  }
+
+  const newLevel = project.levels?.[project.levels.length - 1] || null;
+
+  return res.status(201).json({
+    message: 'Level created',
+    project,
+    levelId: newLevel?._id || null,
+  });
+});
+
+router.patch('/:id/levels/:levelId', async (req, res) => {
+  const { id, levelId } = req.params;
+  const providedName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+
+  if (!providedName) {
+    return res.status(400).json({ message: 'Level name is required' });
+  }
+
+  const { error, project, level } = await loadProjectLevel(id, levelId);
+
+  if (error) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+
+  const duplicate = project.levels.some(
+    (candidate) =>
+      candidate._id.toString() !== level._id.toString() &&
+      candidate.name?.toLowerCase() === providedName.toLowerCase()
+  );
+
+  if (duplicate) {
+    return res.status(409).json({ message: 'Another level already uses this name' });
+  }
+
+  level.name = providedName;
+
+  try {
+    await project.save();
+    await ensureProjectLevels(project);
+    await project.populate(projectPopulation);
+  } catch (saveError) {
+    console.error('Failed to rename project level:', saveError);
+    return res.status(500).json({ message: 'Unable to rename level' });
+  }
+
+  return res.json({ message: 'Level renamed', project, levelId: level._id });
 });
 
 module.exports = router;

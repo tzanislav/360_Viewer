@@ -6,6 +6,7 @@ const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getS3Client } = require('../services/s3Client');
 const Panophoto = require('../models/Panophoto');
 const Project = require('../models/Project');
+const { loadProjectLevel } = require('../utils/projectLevels');
 
 const router = express.Router();
 const upload = multer({
@@ -188,7 +189,7 @@ const uploadMultipleImages = (req, res, next) => {
 };
 
 router.get('/', async (req, res) => {
-  const { projectId } = req.query;
+  const { projectId, levelId } = req.query;
   const filter = {};
 
   if (projectId) {
@@ -199,11 +200,21 @@ router.get('/', async (req, res) => {
     filter.project = projectId;
   }
 
+  if (levelId) {
+    if (levelId === 'unplaced') {
+      filter.$or = [{ levelId: null }, { levelId: { $exists: false } }];
+    } else if (!mongoose.isValidObjectId(levelId)) {
+      return res.status(400).json({ message: 'Invalid level id' });
+    } else {
+      filter.levelId = levelId;
+    }
+  }
+
   try {
     const panophotos = await Panophoto.find(filter)
       .sort({ createdAt: -1 })
-      .populate('project', 'name')
-      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
+  .populate('project', 'name')
+  .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId');
 
     res.json({ panophotos });
   } catch (error) {
@@ -221,8 +232,8 @@ router.get('/:id', async (req, res) => {
 
   try {
     const panophoto = await Panophoto.findById(id)
-      .populate('project', 'name')
-      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
+  .populate('project', 'name')
+  .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId');
 
     if (!panophoto) {
       return res.status(404).json({ message: 'Panophoto not found' });
@@ -330,8 +341,8 @@ router.post('/', uploadMultipleImages, async (req, res) => {
   try {
     const populatedPhotos = await Panophoto.find({ _id: { $in: createdPhotoIds } })
       .sort({ createdAt: -1 })
-      .populate('project', 'name')
-      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
+  .populate('project', 'name')
+  .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId');
 
     return res.status(201).json({
       message: 'Pano photos stored successfully',
@@ -466,11 +477,11 @@ router.patch('/:id/link', async (req, res) => {
 
     const [updatedSource, updatedTarget] = await Promise.all([
       Panophoto.findById(id)
-        .populate('project', 'name')
-        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+  .populate('project', 'name')
+  .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId'),
       Panophoto.findById(targetId)
-        .populate('project', 'name')
-        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+  .populate('project', 'name')
+  .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId'),
     ]);
 
     return res.json({
@@ -524,10 +535,10 @@ router.patch('/:id/unlink', async (req, res) => {
     const [updatedSource, updatedTarget] = await Promise.all([
       Panophoto.findById(id)
         .populate('project', 'name')
-        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId'),
       Panophoto.findById(targetId)
         .populate('project', 'name')
-        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId'),
     ]);
 
     return res.json({
@@ -547,10 +558,25 @@ router.patch('/:id', async (req, res) => {
     return res.status(400).json({ message: 'Invalid panophoto id' });
   }
 
+  let panophoto;
+
+  try {
+    panophoto = await Panophoto.findById(id);
+  } catch (error) {
+    console.error('Failed to load panophoto for update:', error);
+    return res.status(500).json({ message: 'Failed to load panophoto' });
+  }
+
+  if (!panophoto) {
+    return res.status(404).json({ message: 'Panophoto not found' });
+  }
+
   const update = {};
+  let hasChanges = false;
 
   if (typeof req.body.name === 'string') {
     update.name = req.body.name.trim();
+    hasChanges = true;
   }
 
   if (req.body.xPosition !== undefined) {
@@ -559,6 +585,7 @@ router.patch('/:id', async (req, res) => {
       return res.status(400).json({ message: 'xPosition must be a valid number' });
     }
     update.xPosition = parsedX;
+    hasChanges = true;
   }
 
   if (req.body.yPosition !== undefined) {
@@ -567,34 +594,53 @@ router.patch('/:id', async (req, res) => {
       return res.status(400).json({ message: 'yPosition must be a valid number' });
     }
     update.yPosition = parsedY;
+    hasChanges = true;
   }
 
-  if (Object.keys(update).length === 0) {
+  if (req.body.levelId !== undefined) {
+    const rawLevelId = req.body.levelId;
+
+    if (rawLevelId === null || rawLevelId === '' || rawLevelId === 'null') {
+      update.levelId = null;
+      hasChanges = true;
+    } else if (!mongoose.isValidObjectId(rawLevelId)) {
+      return res.status(400).json({ message: 'Invalid level id' });
+    } else {
+      const result = await loadProjectLevel(panophoto.project.toString(), rawLevelId);
+
+      if (result.error) {
+        return res.status(result.error.status || 500).json({ message: result.error.message });
+      }
+
+      update.levelId = result.level._id;
+      hasChanges = true;
+    }
+  }
+
+  if (!hasChanges) {
     return res.status(400).json({ message: 'No valid fields supplied for update' });
   }
 
+  Object.assign(panophoto, update);
+
   try {
-    const panophoto = await Panophoto.findByIdAndUpdate(id, update, {
-      new: true,
-      runValidators: true,
-    })
-      .populate('project', 'name')
-      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition');
+    await panophoto.save();
+  } catch (error) {
+    console.error('Failed to persist panophoto updates:', error);
+    return res.status(500).json({ message: 'Failed to update panophoto' });
+  }
 
-    if (!panophoto) {
-      return res.status(404).json({ message: 'Panophoto not found' });
-    }
+  const neighborIds = await recalculateLinkAzimuths(panophoto);
 
-    const neighborIds = await recalculateLinkAzimuths(panophoto);
-
+  try {
     const [updatedPanophoto, neighbors] = await Promise.all([
       Panophoto.findById(panophoto._id)
         .populate('project', 'name')
-        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition'),
+        .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId'),
       neighborIds.length
         ? Panophoto.find({ _id: { $in: neighborIds } })
             .populate('project', 'name')
-            .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition')
+            .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId')
         : [],
     ]);
 
@@ -604,8 +650,8 @@ router.patch('/:id', async (req, res) => {
       neighbors,
     });
   } catch (error) {
-    console.error('Failed to update panophoto:', error);
-    return res.status(500).json({ message: 'Failed to update panophoto' });
+    console.error('Failed to load updated panophotos:', error);
+    return res.status(500).json({ message: 'Failed to load updated panophoto data' });
   }
 });
 
