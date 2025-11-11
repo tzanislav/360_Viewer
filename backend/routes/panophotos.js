@@ -2,11 +2,11 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const mongoose = require('mongoose');
-const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getS3Client } = require('../services/s3Client');
 const Panophoto = require('../models/Panophoto');
 const Project = require('../models/Project');
-const { loadProjectLevel } = require('../utils/projectLevels');
+const { ensureProjectLevels, loadProjectLevel } = require('../utils/projectLevels');
 
 const router = express.Router();
 const upload = multer({
@@ -223,6 +223,45 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Proxy endpoint to stream S3 images with proper CORS headers
+// MUST come before /:id route to avoid matching "image" as an id
+router.get('/:id/image', async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ message: 'Invalid panophoto id' });
+  }
+
+  try {
+    const panophoto = await Panophoto.findById(id).select('objectKey contentType');
+
+    if (!panophoto || !panophoto.objectKey) {
+      return res.status(404).json({ message: 'Image not found' });
+    }
+
+    const bucketName = process.env.S3_BUCKET_NAME;
+    const s3Client = getS3Client();
+
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: panophoto.objectKey,
+    });
+
+    const s3Response = await s3Client.send(command);
+
+    // Set proper headers
+    res.set('Content-Type', panophoto.contentType || s3Response.ContentType || 'image/jpeg');
+    res.set('Content-Length', s3Response.ContentLength);
+    res.set('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+    
+    // Stream the image data
+    s3Response.Body.pipe(res);
+  } catch (error) {
+    console.error('Failed to stream image:', error);
+    return res.status(500).json({ message: 'Unable to load image' });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
 
@@ -232,11 +271,15 @@ router.get('/:id', async (req, res) => {
 
   try {
     const panophoto = await Panophoto.findById(id)
-  .populate('project', 'name')
-  .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId');
+      .populate('project', 'name levels startPanophoto')
+      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId');
 
     if (!panophoto) {
       return res.status(404).json({ message: 'Panophoto not found' });
+    }
+
+    if (panophoto.project) {
+      await ensureProjectLevels(panophoto.project);
     }
 
     return res.json({ panophoto });

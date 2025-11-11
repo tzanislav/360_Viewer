@@ -183,20 +183,55 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Project not found' });
     }
 
-    if (project.panophotos.length > 0) {
-      return res.status(400).json({ message: 'Cannot delete a project with associated panophotos' });
+    const wasActive = Boolean(project.isActive);
+    const bucketName = process.env.S3_BUCKET_NAME || null;
+    const s3Client = bucketName ? getS3Client() : null;
+
+    const panophotos = await Panophoto.find({ project: project._id });
+    const assetKeys = new Set();
+
+    panophotos.forEach((photo) => {
+      if (photo?.s3Key) {
+        assetKeys.add(photo.s3Key);
+      }
+    });
+
+    if (project.canvasBackgroundImageS3Key) {
+      assetKeys.add(project.canvasBackgroundImageS3Key);
+    }
+
+    if (Array.isArray(project.levels)) {
+      project.levels.forEach((level) => {
+        if (level?.backgroundImageS3Key) {
+          assetKeys.add(level.backgroundImageS3Key);
+        }
+      });
+    }
+
+    if (panophotos.length > 0) {
+      await Panophoto.deleteMany({ project: project._id });
+    }
+
+    if (assetKeys.size > 0 && s3Client && bucketName) {
+      await Promise.all(
+        Array.from(assetKeys).map(async (key) => {
+          try {
+            await s3Client.send(
+              new DeleteObjectCommand({
+                Bucket: bucketName,
+                Key: key,
+              })
+            );
+          } catch (error) {
+            console.error(`Failed to delete S3 object "${key}" during project cleanup:`, error);
+          }
+        })
+      );
     }
 
     await project.deleteOne();
 
-    const nextProject = await Project.findOne().sort({ createdAt: -1 });
-    if (nextProject && !nextProject.isActive) {
-      await Project.updateMany({ _id: { $ne: nextProject._id } }, { isActive: false });
-      nextProject.isActive = true;
-      await nextProject.save();
-      await ensureStartPanophoto(nextProject);
-      await ensureProjectLevels(nextProject);
-    }
+    await Project.updateMany({}, { isActive: false });
 
     return res.json({ message: 'Project deleted' });
   } catch (error) {

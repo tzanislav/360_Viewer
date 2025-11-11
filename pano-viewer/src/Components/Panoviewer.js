@@ -8,6 +8,36 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 const MARKER_IMAGE = "drone.png";
 
+const normalizeId = (value) => {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (!value) {
+    return '';
+  }
+
+  if (typeof value === 'object' && value._id) {
+    if (typeof value._id.toHexString === 'function') {
+      return value._id.toHexString();
+    }
+
+    if (typeof value._id.toString === 'function') {
+      return value._id.toString();
+    }
+  }
+
+  if (typeof value.toHexString === 'function') {
+    return value.toHexString();
+  }
+
+  if (typeof value.toString === 'function') {
+    return value.toString();
+  }
+
+  return '';
+};
+
 const toFiniteOr = (value, fallback = 0) => {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -106,6 +136,9 @@ function Panoviewer() {
   const [isViewerReady, setIsViewerReady] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [levelOptions, setLevelOptions] = useState([]);
+  const [isLoadingLevels, setIsLoadingLevels] = useState(false);
+  const [levelsError, setLevelsError] = useState(null);
 
   const viewerRef = useRef(null);
 
@@ -129,6 +162,9 @@ function Panoviewer() {
     setPanophoto(null);
     setMarkers([]);
     setErrorMessage(null);
+    setLevelOptions([]);
+    setLevelsError(null);
+    setIsLoadingLevels(false);
   }, [photoId]);
 
   useEffect(() => {
@@ -182,6 +218,92 @@ function Panoviewer() {
       isCancelled = true;
     };
   }, [apiBaseUrl, photoId]);
+
+  useEffect(() => {
+    if (!panophoto?.project?._id || !Array.isArray(panophoto.project.levels)) {
+      setLevelOptions([]);
+      setLevelsError(null);
+      setIsLoadingLevels(false);
+      return;
+    }
+
+    let isCancelled = false;
+
+    const loadLevelOptions = async () => {
+      setIsLoadingLevels(true);
+      setLevelsError(null);
+
+      try {
+        const query = new URLSearchParams({ projectId: panophoto.project._id }).toString();
+        const response = await fetch(`${apiBaseUrl}/api/panophotos?${query}`, {
+          credentials: 'include',
+        });
+
+        if (!response.ok) {
+          const errorBody = await response
+            .json()
+            .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+          throw new Error(errorBody.message || 'Failed to load project photos');
+        }
+
+        const payload = await response.json();
+
+        if (isCancelled) {
+          return;
+        }
+
+        const photos = Array.isArray(payload.panophotos) ? payload.panophotos : [];
+
+        const getFirstPhotoId = (levelId) => {
+          if (!levelId) {
+            return null;
+          }
+
+          const matches = photos.filter((photo) => normalizeId(photo.levelId) === levelId);
+
+          if (matches.length === 0) {
+            return null;
+          }
+
+          matches.sort((a, b) => {
+            const aTime = new Date(a.createdAt || 0).getTime();
+            const bTime = new Date(b.createdAt || 0).getTime();
+            return aTime - bTime;
+          });
+
+          const first = matches[0];
+          return first?._id ? normalizeId(first._id) : null;
+        };
+
+        const options = panophoto.project.levels.map((level) => {
+          const levelId = normalizeId(level?._id);
+          return {
+            id: levelId,
+            name: level?.name || 'Level',
+            firstPhotoId: getFirstPhotoId(levelId),
+          };
+        });
+
+        setLevelOptions(options);
+      } catch (error) {
+        if (!isCancelled) {
+          console.error('Failed to load level options:', error);
+          setLevelOptions([]);
+          setLevelsError(error.message);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingLevels(false);
+        }
+      }
+    };
+
+    loadLevelOptions();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [apiBaseUrl, panophoto]);
 
   useEffect(() => {
     if (!isViewerReady) {
@@ -250,6 +372,43 @@ function Panoviewer() {
     setIsViewerReady(true);
   }, []);
 
+  const selectedLevelId = useMemo(() => normalizeId(panophoto?.levelId), [panophoto]);
+
+  const effectiveLevelValue = useMemo(() => {
+    if (!selectedLevelId) {
+      return 'unplaced';
+    }
+
+    const hasMatch = levelOptions.some((option) => option.id === selectedLevelId);
+    return hasMatch ? selectedLevelId : 'unplaced';
+  }, [levelOptions, selectedLevelId]);
+
+  const handleLevelChange = useCallback(
+    (event) => {
+      const levelId = event.target.value;
+
+      if (!levelId || levelId === 'unplaced') {
+        return;
+      }
+
+      const match = levelOptions.find((option) => option.id === levelId);
+
+      if (!match || !match.firstPhotoId) {
+        return;
+      }
+
+      if (match.firstPhotoId === photoId) {
+        return;
+      }
+
+      navigate(`/viewer?id=${match.firstPhotoId}`, {
+        state: { panophotoId: match.firstPhotoId },
+        replace: false,
+      });
+    },
+    [levelOptions, navigate, photoId]
+  );
+
   const plugins = useMemo(
     () => [
       [CompassPlugin, {}],
@@ -258,7 +417,13 @@ function Panoviewer() {
     []
   );
 
-  const viewerSource = panophoto?.imageUrl || fallbackSource;
+  const viewerSource = useMemo(() => {
+    if (photoId && panophoto) {
+      // Use backend proxy to avoid CORS issues with S3
+      return `${apiBaseUrl}/api/panophotos/${photoId}/image`;
+    }
+    return panophoto?.imageUrl || fallbackSource;
+  }, [apiBaseUrl, photoId, panophoto, fallbackSource]);
 
   if (errorMessage && !photoId) {
     return (
@@ -278,8 +443,33 @@ function Panoviewer() {
         >
           Back to Editor
         </button>
+        <div className="viewer-level-selector">
+          <label>
+            <span>Level</span>
+            <select
+              value={effectiveLevelValue}
+              onChange={handleLevelChange}
+              disabled={isLoadingLevels || levelOptions.length === 0}
+            >
+              <option value="unplaced">
+                {isLoadingLevels ? 'Loading…' : 'Select level'}
+              </option>
+              {levelOptions.map((option) => (
+                <option
+                  key={option.id || option.name}
+                  value={option.id || ''}
+                  disabled={!option.firstPhotoId}
+                >
+                  {option.name}
+                  {!option.firstPhotoId ? ' (empty)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
       {errorMessage ? <p className="panophoto-status error">{errorMessage}</p> : null}
+      {levelsError ? <p className="panophoto-status error">{levelsError}</p> : null}
       {isFetching && !panophoto ? <p className="panophoto-status">Loading…</p> : null}
       <ReactPhotoSphereViewer
         src={viewerSource}
