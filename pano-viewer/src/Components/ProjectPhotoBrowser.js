@@ -16,7 +16,17 @@ function defaultNormalizeId(value) {
   }
 
   if (typeof value === 'object' && value._id) {
-    return value._id.toString();
+    if (typeof value._id.toHexString === 'function') {
+      return value._id.toHexString();
+    }
+
+    if (typeof value._id.toString === 'function') {
+      return value._id.toString();
+    }
+  }
+
+  if (typeof value.toHexString === 'function') {
+    return value.toHexString();
   }
 
   if (typeof value.toString === 'function') {

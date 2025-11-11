@@ -19,10 +19,24 @@ const normalizeId = (value) => {
   }
 
   if (typeof value === 'object' && value._id) {
-    return value._id.toString();
+    if (typeof value._id.toHexString === 'function') {
+      return value._id.toHexString();
+    }
+
+    if (typeof value._id.toString === 'function') {
+      return value._id.toString();
+    }
   }
 
-  return value.toString();
+  if (typeof value.toHexString === 'function') {
+    return value.toHexString();
+  }
+
+  if (typeof value.toString === 'function') {
+    return value.toString();
+  }
+
+  return '';
 };
 
 // clamp01 forces numeric input into the [0, 1] range for canvas coordinates.
@@ -639,10 +653,10 @@ function ProjectEditor() {
         return;
       }
 
-      const payload = { xPosition, yPosition };
+      const updatePayload = { xPosition, yPosition };
 
       if (Object.prototype.hasOwnProperty.call(options, 'levelId')) {
-        payload.levelId = options.levelId;
+        updatePayload.levelId = options.levelId;
       }
 
       try {
@@ -650,7 +664,7 @@ function ProjectEditor() {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify(payload),
+          body: JSON.stringify(updatePayload),
         });
 
         if (!response.ok) {
