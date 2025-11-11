@@ -232,30 +232,54 @@ router.get('/:id/image', async (req, res) => {
     return res.status(400).json({ message: 'Invalid panophoto id' });
   }
 
-  try {
-    const panophoto = await Panophoto.findById(id).select('objectKey contentType');
+  const bucketName = process.env.S3_BUCKET_NAME;
 
-    if (!panophoto || !panophoto.objectKey) {
+  try {
+    const panophoto = await Panophoto.findById(id).select('s3Key imageUrl');
+
+    if (!panophoto) {
+      return res.status(404).json({ message: 'Panophoto not found' });
+    }
+
+    if (!bucketName || !panophoto.s3Key) {
+      if (panophoto.imageUrl) {
+        return res.redirect(panophoto.imageUrl);
+      }
+
       return res.status(404).json({ message: 'Image not found' });
     }
 
-    const bucketName = process.env.S3_BUCKET_NAME;
     const s3Client = getS3Client();
 
     const command = new GetObjectCommand({
       Bucket: bucketName,
-      Key: panophoto.objectKey,
+      Key: panophoto.s3Key,
     });
 
     const s3Response = await s3Client.send(command);
 
-    // Set proper headers
-    res.set('Content-Type', panophoto.contentType || s3Response.ContentType || 'image/jpeg');
-    res.set('Content-Length', s3Response.ContentLength);
-    res.set('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
-    
-    // Stream the image data
-    s3Response.Body.pipe(res);
+    res.set('Content-Type', s3Response.ContentType || 'image/jpeg');
+    if (s3Response.ContentLength) {
+      res.set('Content-Length', s3Response.ContentLength.toString());
+    }
+    res.set('Cache-Control', 'public, max-age=31536000');
+
+    const bodyStream = s3Response.Body;
+
+    if (bodyStream && typeof bodyStream.pipe === 'function') {
+      bodyStream.pipe(res);
+      return;
+    }
+
+    if (bodyStream && bodyStream[Symbol.asyncIterator]) {
+      for await (const chunk of bodyStream) {
+        res.write(chunk);
+      }
+      res.end();
+      return;
+    }
+
+    return res.end(bodyStream || null);
   } catch (error) {
     console.error('Failed to stream image:', error);
     return res.status(500).json({ message: 'Unable to load image' });
