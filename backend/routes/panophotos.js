@@ -91,6 +91,12 @@ const calculateAzimuthDegrees = (sourcePhoto, targetPhoto) => {
   return degrees;
 };
 
+const normalizeOffsetDegrees = (value) => {
+  const finiteValue = toFiniteOr(value, 0);
+  const normalized = ((finiteValue + 540) % 360) - 180;
+  return Number.isFinite(normalized) ? normalized : 0;
+};
+
 async function upsertLink(sourcePhoto, targetPhoto, azimuth) {
   // Remove legacy ObjectId-only entries so we can manage structured links in one place.
   await Panophoto.updateOne(
@@ -508,6 +514,59 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+router.patch('/:id/links/:targetId', async (req, res) => {
+  const { id, targetId } = req.params;
+  const { azimuthOffset } = req.body;
+
+  if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(targetId)) {
+    return res.status(400).json({ message: 'Invalid panophoto id supplied' });
+  }
+
+  const parsedOffset = Number.parseFloat(azimuthOffset);
+
+  if (!Number.isFinite(parsedOffset)) {
+    return res.status(400).json({ message: 'azimuthOffset must be a valid number' });
+  }
+
+  const normalizedOffset = normalizeOffsetDegrees(parsedOffset);
+
+  try {
+    const updateResult = await Panophoto.updateOne(
+      { _id: id, 'linkedPhotos.target': targetId },
+      { $set: { 'linkedPhotos.$.azimuthOffset': normalizedOffset } }
+    );
+
+    const matchedCount =
+      typeof updateResult?.matchedCount === 'number'
+        ? updateResult.matchedCount
+        : updateResult?.n ?? 0;
+
+    if (!matchedCount) {
+      return res.status(404).json({ message: 'Link not found on panophoto' });
+    }
+
+    const panophoto = await Panophoto.findById(id)
+      .populate('project', 'name levels startPanophoto')
+      .populate('linkedPhotos.target', 'name imageUrl thumbnailUrl xPosition yPosition levelId');
+
+    if (!panophoto) {
+      return res.status(404).json({ message: 'Panophoto not found' });
+    }
+
+    if (panophoto.project) {
+      await ensureProjectLevels(panophoto.project);
+    }
+
+    return res.json({
+      message: 'Marker offset updated successfully',
+      panophoto,
+    });
+  } catch (error) {
+    console.error('Failed to update marker offset:', error);
+    return res.status(500).json({ message: 'Failed to update marker offset' });
+  }
+});
+
 router.patch('/:id/link', async (req, res) => {
   const { id } = req.params;
   const { targetId } = req.body;
@@ -640,6 +699,30 @@ router.patch('/:id', async (req, res) => {
 
   const update = {};
   let hasChanges = false;
+  const previousLinkedTargetIds = Array.isArray(panophoto.linkedPhotos)
+    ? panophoto.linkedPhotos
+        .map((link) => {
+          if (!link) {
+            return null;
+          }
+
+          if (link.target && link.target._id) {
+            return link.target._id.toString();
+          }
+
+          if (link.target) {
+            return link.target.toString();
+          }
+
+          if (mongoose.isValidObjectId(link)) {
+            return link.toString();
+          }
+
+          return null;
+        })
+        .filter((value) => value && mongoose.isValidObjectId(value))
+    : [];
+  let removedNeighborIds = [];
 
   if (typeof req.body.name === 'string') {
     update.name = req.body.name.trim();
@@ -670,6 +753,9 @@ router.patch('/:id', async (req, res) => {
     if (rawLevelId === null || rawLevelId === '' || rawLevelId === 'null') {
       update.levelId = null;
       hasChanges = true;
+      if (previousLinkedTargetIds.length) {
+        removedNeighborIds = [...new Set(previousLinkedTargetIds.map((value) => value.toString()))];
+      }
     } else if (!mongoose.isValidObjectId(rawLevelId)) {
       return res.status(400).json({ message: 'Invalid level id' });
     } else {
@@ -690,6 +776,10 @@ router.patch('/:id', async (req, res) => {
 
   Object.assign(panophoto, update);
 
+  if (Object.prototype.hasOwnProperty.call(update, 'levelId') && update.levelId === null) {
+    panophoto.linkedPhotos = [];
+  }
+
   try {
     await panophoto.save();
   } catch (error) {
@@ -697,7 +787,33 @@ router.patch('/:id', async (req, res) => {
     return res.status(500).json({ message: 'Failed to update panophoto' });
   }
 
-  const neighborIds = await recalculateLinkAzimuths(panophoto);
+  let neighborIds = [];
+
+  if (removedNeighborIds.length) {
+    const removalUpdates = removedNeighborIds.map((neighborId) =>
+      Panophoto.updateOne(
+        { _id: neighborId },
+        { $pull: { linkedPhotos: { target: panophoto._id } } }
+      )
+    );
+
+    const legacyRemovalUpdates = removedNeighborIds.map((neighborId) =>
+      Panophoto.updateOne(
+        { _id: neighborId },
+        { $pull: { linkedPhotos: panophoto._id } }
+      )
+    );
+
+    try {
+      await Promise.all([...removalUpdates, ...legacyRemovalUpdates]);
+    } catch (error) {
+      console.error('Failed to remove reverse links during unplace:', error);
+    }
+
+    neighborIds = removedNeighborIds;
+  } else {
+    neighborIds = await recalculateLinkAzimuths(panophoto);
+  }
 
   try {
     const [updatedPanophoto, neighbors] = await Promise.all([

@@ -65,6 +65,15 @@ const calculateAzimuthDegrees = (source, target) => {
   return degrees;
 };
 
+const normalizeDegrees = (value) => ((toFiniteOr(value, 0) % 360) + 360) % 360;
+
+const normalizeOffsetDegrees = (value) => {
+  const normalized = ((toFiniteOr(value, 0) + 540) % 360) - 180;
+  return Number.isFinite(normalized) ? normalized : 0;
+};
+
+const radiansToDegrees = (value) => toFiniteOr(value, 0) * (180 / Math.PI);
+
 const extractTargetId = (link) => {
   if (!link) {
     return '';
@@ -87,7 +96,10 @@ const extractTargetId = (link) => {
   return link?.toString?.() ?? '';
 };
 
-const buildMarkersFromLinks = (panophoto) => {
+const buildMarkersFromLinks = (panophoto, options = {}) => {
+  const { highlightTargetId = null, isAdjustMode = false } = options;
+  const currentPhotoId = normalizeId(panophoto?._id);
+
   if (!panophoto?.linkedPhotos?.length) {
     return [];
   }
@@ -100,23 +112,54 @@ const buildMarkersFromLinks = (panophoto) => {
         return null;
       }
 
+      if (currentPhotoId && targetId === currentPhotoId) {
+        return null;
+      }
+
       const azimuth = Number.isFinite(Number(link?.azimuth))
         ? Number(link.azimuth)
         : calculateAzimuthDegrees(panophoto, link?.target);
       const azimuthOffset = toFiniteOr(link?.azimuthOffset, 0);
       const yaw = ((azimuth + azimuthOffset) % 360 + 360) % 360;
       const label = link?.target?.name || 'View linked photo';
+      const isHighlighted = Boolean(highlightTargetId && highlightTargetId === targetId);
 
-      return {
+      const marker = {
         id: `link-${targetId}-${index}`,
         image: MARKER_IMAGE,
         size: { width: 64, height: 64 },
         position: { yaw: `${yaw}deg`, pitch: '-0.1deg' },
         tooltip: label,
-        data: { targetId },
+        data: { targetId, azimuth, azimuthOffset, label },
       };
+
+      if (isAdjustMode) {
+        marker.style = {
+          cursor: 'pointer',
+          opacity: isHighlighted ? 1 : 0.65,
+          filter: isHighlighted ? 'drop-shadow(0 0 12px #10b981)' : undefined,
+        };
+      }
+
+      return marker;
     })
     .filter(Boolean);
+};
+
+const getMarkerData = (marker) => {
+  if (!marker) {
+    return {};
+  }
+
+  if (marker.config && marker.config.data) {
+    return marker.config.data;
+  }
+
+  if (marker.data) {
+    return marker.data;
+  }
+
+  return {};
 };
 
 function Panoviewer() {
@@ -139,24 +182,351 @@ function Panoviewer() {
   const [levelOptions, setLevelOptions] = useState([]);
   const [isLoadingLevels, setIsLoadingLevels] = useState(false);
   const [levelsError, setLevelsError] = useState(null);
+  const [isAdjustModeActive, setIsAdjustModeActive] = useState(false);
+  const [selectedTargetId, setSelectedTargetId] = useState(null);
+  const [selectedMarkerLabel, setSelectedMarkerLabel] = useState('');
+  const [statusMessage, setStatusMessage] = useState(null);
+  const [isSavingOffset, setIsSavingOffset] = useState(false);
 
   const viewerRef = useRef(null);
+  const previousPhotoIdRef = useRef(photoId);
+  const adjustModeRef = useRef(isAdjustModeActive);
+  const selectedTargetIdRef = useRef(selectedTargetId);
+  const isSavingOffsetRef = useRef(isSavingOffset);
+  const panophotoRef = useRef(panophoto);
+
+  useEffect(() => {
+    adjustModeRef.current = isAdjustModeActive;
+  }, [isAdjustModeActive]);
+
+  useEffect(() => {
+    selectedTargetIdRef.current = selectedTargetId;
+  }, [selectedTargetId]);
+
+  useEffect(() => {
+    isSavingOffsetRef.current = isSavingOffset;
+  }, [isSavingOffset]);
+
+  useEffect(() => {
+    panophotoRef.current = panophoto;
+  }, [panophoto]);
+
+  const resetAdjustModeState = useCallback(() => {
+    adjustModeRef.current = false;
+    setIsAdjustModeActive(false);
+    selectedTargetIdRef.current = null;
+    setSelectedTargetId(null);
+    setSelectedMarkerLabel('');
+    setStatusMessage(null);
+  }, []);
+
+  const fetchPanophotoData = useCallback(
+    async (idToLoad) => {
+      const response = await fetch(`${apiBaseUrl}/api/panophotos/${idToLoad}`, {
+        credentials: 'include',
+      });
+
+      const rawText = await response.text();
+      let payload = null;
+
+      if (rawText) {
+        try {
+          payload = JSON.parse(rawText);
+        } catch (error) {
+          payload = null;
+        }
+      }
+
+      if (!response.ok) {
+        const message = (payload && payload.message) || rawText || 'Failed to load panophoto';
+        throw new Error(message);
+      }
+
+      return payload ? payload.panophoto : null;
+    },
+    [apiBaseUrl]
+  );
 
   const handleMarkerSelect = useCallback(
     (event) => {
-      const targetId = event?.marker?.data?.targetId;
+      const markerData = getMarkerData(event?.marker);
+      const targetId = markerData?.targetId;
+      const currentPhotoId = normalizeId(panophotoRef.current?._id) || normalizeId(photoId);
+      const adjustActive = adjustModeRef.current;
 
-      if (!targetId || targetId === photoId) {
+      console.log('[Panoviewer] marker selected', {
+        targetId,
+        adjustActive,
+        photoId,
+      });
+
+      if (!targetId || (currentPhotoId && targetId === currentPhotoId)) {
         return;
       }
 
+      if (adjustActive) {
+        setSelectedTargetId(targetId);
+        selectedTargetIdRef.current = targetId;
+        setSelectedMarkerLabel(markerData?.label || 'Linked photo');
+        setStatusMessage('Marker selected. Click anywhere in the scene to place it.');
+        return;
+      }
+
+      resetAdjustModeState();
       navigate(`/viewer?id=${targetId}`, {
         state: { panophotoId: targetId },
         replace: false,
       });
     },
-    [navigate, photoId]
+    [navigate, photoId, resetAdjustModeState]
   );
+
+  const handleToggleAdjustMode = useCallback(() => {
+    if (isSavingOffsetRef.current) {
+      return;
+    }
+
+    if (adjustModeRef.current) {
+      resetAdjustModeState();
+      return;
+    }
+
+    adjustModeRef.current = true;
+    setIsAdjustModeActive(true);
+    selectedTargetIdRef.current = null;
+    setSelectedTargetId(null);
+    setSelectedMarkerLabel('');
+    setStatusMessage('Adjust mode enabled. Select a marker to reposition.');
+  }, [resetAdjustModeState]);
+
+  const handleBackToEditor = useCallback(() => {
+    resetAdjustModeState();
+    navigate('/projects/editor');
+  }, [navigate, resetAdjustModeState]);
+
+  const saveMarkerOffset = useCallback(
+    async (targetId, offsetValue) => {
+      if (!photoId) {
+        throw new Error('No active panophoto selected');
+      }
+
+      const response = await fetch(`${apiBaseUrl}/api/panophotos/${photoId}/links/${targetId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ azimuthOffset: offsetValue }),
+      });
+
+      const rawText = await response.text();
+      let payload = null;
+
+      if (rawText) {
+        try {
+          payload = JSON.parse(rawText);
+        } catch (error) {
+          payload = null;
+        }
+      }
+
+      if (!response.ok) {
+        const message = (payload && payload.message) || rawText || 'Failed to update marker offset';
+        throw new Error(message);
+      }
+
+      return payload ? payload.panophoto : null;
+    },
+    [apiBaseUrl, photoId]
+  );
+
+  const handleViewerClick = useCallback(async (eventData) => {
+    const adjustActive = adjustModeRef.current;
+    const activeTargetId = selectedTargetIdRef.current;
+    const savingOffset = isSavingOffsetRef.current;
+    const currentPanophoto = panophotoRef.current;
+    const currentPhotoId = normalizeId(currentPanophoto?._id) || normalizeId(photoId);
+
+    console.log('[Panoviewer] viewer click received', {
+      eventData,
+      adjustActive,
+      activeTargetId,
+      savingOffset,
+    });
+
+    if (!adjustActive || !activeTargetId || savingOffset) {
+      return;
+    }
+
+    if (!currentPanophoto) {
+      console.warn('[Panoviewer] click ignored because panophoto data is missing');
+      return;
+    }
+
+    if (currentPhotoId && activeTargetId === currentPhotoId) {
+      console.warn('[Panoviewer] ignoring adjust attempt for self link', {
+        activeTargetId,
+        currentPhotoId,
+      });
+      setStatusMessage('Cannot adjust a link pointing to this photo. Select another marker.');
+      setSelectedTargetId(null);
+      selectedTargetIdRef.current = null;
+      setSelectedMarkerLabel('');
+      return;
+    }
+
+    const candidateSources = [
+      eventData && typeof eventData === 'object' ? eventData.data : null,
+      eventData && typeof eventData === 'object' ? eventData.event?.data : null,
+      eventData && typeof eventData === 'object' ? eventData.event : null,
+      eventData,
+    ].filter(Boolean);
+
+    const payload = candidateSources.find((candidate) => typeof candidate === 'object') || {};
+
+    console.log('[Panoviewer] click payload candidates', {
+      candidateSources,
+      chosenPayload: payload,
+    });
+
+    const markerIdFromEvent =
+      (payload && typeof payload === 'object' && payload.markerId) ||
+      (payload && payload.marker && payload.marker.config && payload.marker.config.id) ||
+      null;
+
+    if (markerIdFromEvent) {
+      console.log('[Panoviewer] click originated from marker, ignoring', { markerIdFromEvent });
+      return;
+    }
+
+    const extractAngle = (value) => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+      }
+
+      if (typeof value === 'string') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+
+      return null;
+    };
+
+    const yawCandidates = [
+      extractAngle(payload?.longitude),
+      extractAngle(payload?.yaw),
+      extractAngle(payload?.position?.longitude),
+      extractAngle(payload?.position?.yaw),
+      extractAngle(payload?.angles?.longitude),
+      extractAngle(payload?.angles?.yaw),
+      extractAngle(payload?.data?.longitude),
+      extractAngle(payload?.data?.yaw),
+    ].filter((value) => value !== null);
+
+    const rawYaw = yawCandidates.length > 0 ? yawCandidates[0] : null;
+
+    console.log('[Panoviewer] yaw candidates', {
+      yawCandidates,
+      rawYaw,
+    });
+
+    if (!Number.isFinite(rawYaw)) {
+      setStatusMessage('Unable to determine where you clicked. Try again.');
+      console.log('[Panoviewer] no usable yaw from click payload');
+      return;
+    }
+
+    const isRadians = Math.abs(rawYaw) <= Math.PI * 2 + 1e-6;
+    const yawDegrees = normalizeDegrees(isRadians ? radiansToDegrees(rawYaw) : rawYaw);
+
+    console.log('[Panoviewer] computed yaw', {
+      rawYaw,
+      isRadians,
+      yawDegrees,
+    });
+
+    const link = (currentPanophoto?.linkedPhotos || []).find(
+      (currentLink) => extractTargetId(currentLink) === activeTargetId,
+    );
+
+    if (!link) {
+      setStatusMessage('Selected marker could not be found. Please select it again.');
+      setSelectedTargetId(null);
+      selectedTargetIdRef.current = null;
+      setSelectedMarkerLabel('');
+      console.warn('[Panoviewer] selected link missing in panophoto data', {
+        selectedTargetId: activeTargetId,
+        links: currentPanophoto?.linkedPhotos,
+      });
+      return;
+    }
+
+    const baseAzimuth = normalizeDegrees(toFiniteOr(link?.azimuth, calculateAzimuthDegrees(currentPanophoto, link?.target)));
+    const currentOffset = normalizeOffsetDegrees(link?.azimuthOffset);
+    const newOffset = normalizeOffsetDegrees(yawDegrees - baseAzimuth);
+
+    console.log('[Panoviewer] offset computation', {
+      baseAzimuth,
+      currentOffset,
+      newOffset,
+    });
+
+    if (Math.abs(newOffset - currentOffset) < 0.1) {
+      setStatusMessage('Marker offset unchanged. Click another direction or select a different marker.');
+      console.log('[Panoviewer] offset change below threshold');
+      return;
+    }
+
+    try {
+      setIsSavingOffset(true);
+      isSavingOffsetRef.current = true;
+      setStatusMessage('Saving marker offset…');
+
+      console.log('[Panoviewer] saving marker offset', {
+        photoId,
+        selectedTargetId: activeTargetId,
+        newOffset,
+      });
+
+      const updatedPanophoto = await saveMarkerOffset(activeTargetId, newOffset);
+
+      if (updatedPanophoto) {
+        console.log('[Panoviewer] offset save returned updated panophoto');
+        setPanophoto(updatedPanophoto);
+      } else {
+        const refreshed = await fetchPanophotoData(photoId);
+        console.log('[Panoviewer] offset save returned null, fetched latest panophoto');
+        setPanophoto(refreshed);
+      }
+
+      setStatusMessage('Marker offset updated. Select another marker to continue.');
+    } catch (error) {
+      console.error('Failed to update marker offset:', error);
+      setStatusMessage(error.message);
+
+      console.log('[Panoviewer] offset save failed, attempting refresh');
+
+      try {
+        const refreshed = await fetchPanophotoData(photoId);
+        setPanophoto(refreshed);
+      } catch (refreshError) {
+        console.error('Failed to refresh panophoto after offset error:', refreshError);
+      }
+    } finally {
+      setIsSavingOffset(false);
+      isSavingOffsetRef.current = false;
+      setSelectedTargetId(null);
+      selectedTargetIdRef.current = null;
+      setSelectedMarkerLabel('');
+    }
+  }, [fetchPanophotoData, panophoto, photoId, saveMarkerOffset]);
+
+  useEffect(() => {
+    if (previousPhotoIdRef.current !== photoId) {
+      previousPhotoIdRef.current = photoId;
+      resetAdjustModeState();
+    }
+  }, [photoId, resetAdjustModeState]);
 
   useEffect(() => {
     setPanophoto(null);
@@ -165,39 +535,32 @@ function Panoviewer() {
     setLevelOptions([]);
     setLevelsError(null);
     setIsLoadingLevels(false);
+    setSelectedTargetId(null);
+    selectedTargetIdRef.current = null;
+    setSelectedMarkerLabel('');
   }, [photoId]);
 
   useEffect(() => {
     if (!photoId) {
+      setPanophoto(null);
+      setMarkers([]);
       return;
     }
 
     let isCancelled = false;
 
-    const fetchPanophoto = async () => {
+    const load = async () => {
       setIsFetching(true);
       setErrorMessage(null);
 
       try {
-        const response = await fetch(`${apiBaseUrl}/api/panophotos/${photoId}`, {
-          credentials: 'include',
-        });
-
-        if (!response.ok) {
-          const errorBody = await response
-            .json()
-            .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
-          throw new Error(errorBody.message || 'Failed to load panophoto');
-        }
-
-        const payload = await response.json();
+        const panophotoData = await fetchPanophotoData(photoId);
 
         if (isCancelled) {
           return;
         }
 
-        setPanophoto(payload.panophoto);
-        setMarkers(buildMarkersFromLinks(payload.panophoto));
+        setPanophoto(panophotoData);
       } catch (error) {
         if (!isCancelled) {
           console.error('Failed to fetch panophoto:', error);
@@ -212,12 +575,26 @@ function Panoviewer() {
       }
     };
 
-    fetchPanophoto();
+    load();
 
     return () => {
       isCancelled = true;
     };
-  }, [apiBaseUrl, photoId]);
+  }, [fetchPanophotoData, photoId]);
+
+  useEffect(() => {
+    if (!panophoto) {
+      setMarkers([]);
+      return;
+    }
+
+    setMarkers(
+      buildMarkersFromLinks(panophoto, {
+        highlightTargetId: isAdjustModeActive ? selectedTargetId : null,
+        isAdjustMode: isAdjustModeActive,
+      })
+    );
+  }, [isAdjustModeActive, panophoto, selectedTargetId]);
 
   useEffect(() => {
     if (!panophoto?.project?._id || !Array.isArray(panophoto.project.levels)) {
@@ -401,12 +778,13 @@ function Panoviewer() {
         return;
       }
 
+      resetAdjustModeState();
       navigate(`/viewer?id=${match.firstPhotoId}`, {
         state: { panophotoId: match.firstPhotoId },
         replace: false,
       });
     },
-    [levelOptions, navigate, photoId]
+    [levelOptions, navigate, photoId, resetAdjustModeState]
   );
 
   const plugins = useMemo(
@@ -419,7 +797,6 @@ function Panoviewer() {
 
   const viewerSource = useMemo(() => {
     if (photoId && panophoto) {
-      // Use backend proxy to avoid CORS issues with S3
       return `${apiBaseUrl}/api/panophotos/${photoId}/image`;
     }
     return panophoto?.imageUrl || fallbackSource;
@@ -439,9 +816,17 @@ function Panoviewer() {
         <button
           type="button"
           className="viewer-editor-button"
-          onClick={() => navigate('/projects/editor')}
+          onClick={handleBackToEditor}
         >
           Back to Editor
+        </button>
+        <button
+          type="button"
+          className={`viewer-editor-button adjust-toggle${isAdjustModeActive ? ' active' : ''}`}
+          onClick={handleToggleAdjustMode}
+          disabled={!panophoto?.linkedPhotos?.length || isSavingOffset}
+        >
+          {isAdjustModeActive ? 'Done Adjusting Markers' : 'Adjust Marker Positions'}
         </button>
         <div className="viewer-level-selector">
           <label>
@@ -471,12 +856,19 @@ function Panoviewer() {
       {errorMessage ? <p className="panophoto-status error">{errorMessage}</p> : null}
       {levelsError ? <p className="panophoto-status error">{levelsError}</p> : null}
       {isFetching && !panophoto ? <p className="panophoto-status">Loading…</p> : null}
+      {statusMessage ? (
+        <p className={`panophoto-status${isSavingOffset ? ' pending' : ''}`}>
+          {statusMessage}
+          {selectedMarkerLabel ? ` — ${selectedMarkerLabel}` : ''}
+        </p>
+      ) : null}
       <ReactPhotoSphereViewer
         src={viewerSource}
         plugins={plugins}
         height={"100vh"}
         width={"100%"}
         onReady={handleReady}
+        onClick={handleViewerClick}
       ></ReactPhotoSphereViewer>
     </div>
   );

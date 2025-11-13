@@ -231,6 +231,10 @@
   color: #b91c1c;
 }
 
+.panophoto-status.pending {
+  color: #2563eb;
+}
+
 .projects-page {
   max-width: 1080px;
   margin: 40px auto;
@@ -1060,6 +1064,16 @@
 .viewer-editor-button:focus-visible {
   outline: 2px solid rgba(37, 99, 235, 0.8);
   outline-offset: 2px;
+}
+
+.viewer-editor-button.adjust-toggle.active {
+  background-color: rgba(16, 185, 129, 0.9);
+}
+
+.viewer-editor-button.adjust-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  box-shadow: none;
 }
 
 .viewer-level-selector {
