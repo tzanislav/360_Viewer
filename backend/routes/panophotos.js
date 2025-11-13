@@ -53,6 +53,65 @@ async function ensureProjectStartPanophoto(projectId) {
   }
 }
 
+async function clearLevelStartReference(projectId, panophotoId, levelIds = null) {
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(panophotoId)) {
+    return;
+  }
+
+  let project;
+
+  try {
+    project = await Project.findById(projectId);
+  } catch (error) {
+    console.error('Failed to load project for level start cleanup:', error);
+    return;
+  }
+
+  if (!project || !Array.isArray(project.levels) || project.levels.length === 0) {
+    return;
+  }
+
+  const targetId = panophotoId.toString();
+  const limitSet = levelIds
+    ? new Set(
+        (Array.isArray(levelIds) ? levelIds : [levelIds])
+          .map((value) => (value && value.toString ? value.toString() : value))
+          .filter(Boolean)
+      )
+    : null;
+
+  let mutated = false;
+
+  project.levels.forEach((level) => {
+    if (!level || !level._id) {
+      return;
+    }
+
+    const levelId = level._id.toString();
+
+    if (limitSet && !limitSet.has(levelId)) {
+      return;
+    }
+
+    if (level.startPanophoto && level.startPanophoto.toString() === targetId) {
+      level.startPanophoto = null;
+      mutated = true;
+    }
+  });
+
+  if (!mutated) {
+    return;
+  }
+
+  project.markModified('levels');
+
+  try {
+    await project.save();
+  } catch (error) {
+    console.error('Failed to clear level start reference:', error);
+  }
+}
+
 const slugify = (value) => {
   if (!value) {
     return 'item';
@@ -505,6 +564,7 @@ router.delete('/:id', async (req, res) => {
         $pull: { panophotos: panophoto._id },
       });
       await ensureProjectStartPanophoto(panophoto.project);
+      await clearLevelStartReference(panophoto.project, panophoto._id);
     }
 
     return res.json({ message: 'Panophoto deleted successfully' });
@@ -697,6 +757,8 @@ router.patch('/:id', async (req, res) => {
     return res.status(404).json({ message: 'Panophoto not found' });
   }
 
+  const originalLevelId = panophoto.levelId ? panophoto.levelId.toString() : null;
+
   const update = {};
   let hasChanges = false;
   const previousLinkedTargetIds = Array.isArray(panophoto.linkedPhotos)
@@ -785,6 +847,12 @@ router.patch('/:id', async (req, res) => {
   } catch (error) {
     console.error('Failed to persist panophoto updates:', error);
     return res.status(500).json({ message: 'Failed to update panophoto' });
+  }
+
+  const updatedLevelId = panophoto.levelId ? panophoto.levelId.toString() : null;
+
+  if (originalLevelId && originalLevelId !== updatedLevelId) {
+    await clearLevelStartReference(panophoto.project, panophoto._id, originalLevelId);
   }
 
   let neighborIds = [];

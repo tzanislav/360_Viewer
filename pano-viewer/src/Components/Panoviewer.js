@@ -412,36 +412,50 @@ function Panoviewer() {
       return null;
     };
 
-    const yawCandidates = [
-      extractAngle(payload?.longitude),
-      extractAngle(payload?.yaw),
-      extractAngle(payload?.position?.longitude),
-      extractAngle(payload?.position?.yaw),
-      extractAngle(payload?.angles?.longitude),
-      extractAngle(payload?.angles?.yaw),
-      extractAngle(payload?.data?.longitude),
-      extractAngle(payload?.data?.yaw),
-    ].filter((value) => value !== null);
+    const toAngleCandidate = (value, unit = 'radians') => {
+      const parsed = extractAngle(value);
+      if (!Number.isFinite(parsed)) {
+        return null;
+      }
 
-    const rawYaw = yawCandidates.length > 0 ? yawCandidates[0] : null;
+      return { value: parsed, unit };
+    };
+
+    const yawCandidates = [
+      toAngleCandidate(payload?.longitude, 'radians'),
+      toAngleCandidate(payload?.yaw, 'radians'),
+      toAngleCandidate(payload?.position?.longitude, 'radians'),
+      toAngleCandidate(payload?.position?.yaw, 'radians'),
+      toAngleCandidate(payload?.angles?.longitude, 'radians'),
+      toAngleCandidate(payload?.angles?.yaw, 'radians'),
+      toAngleCandidate(payload?.data?.longitude, 'radians'),
+      toAngleCandidate(payload?.data?.yaw, 'radians'),
+      toAngleCandidate(payload?.longitudeDeg, 'degrees'),
+      toAngleCandidate(payload?.yawDeg, 'degrees'),
+      toAngleCandidate(payload?.data?.yawDegrees, 'degrees'),
+    ].filter(Boolean);
+
+    const yawCandidate = yawCandidates.length > 0 ? yawCandidates[0] : null;
 
     console.log('[Panoviewer] yaw candidates', {
       yawCandidates,
-      rawYaw,
+      yawCandidate,
     });
 
-    if (!Number.isFinite(rawYaw)) {
+    if (!yawCandidate) {
       setStatusMessage('Unable to determine where you clicked. Try again.');
       console.log('[Panoviewer] no usable yaw from click payload');
       return;
     }
 
-    const isRadians = Math.abs(rawYaw) <= Math.PI * 2 + 1e-6;
-    const yawDegrees = normalizeDegrees(isRadians ? radiansToDegrees(rawYaw) : rawYaw);
+    const yawDegrees = normalizeDegrees(
+      yawCandidate.unit === 'degrees'
+        ? yawCandidate.value
+        : radiansToDegrees(yawCandidate.value)
+    );
 
     console.log('[Panoviewer] computed yaw', {
-      rawYaw,
-      isRadians,
+      yawCandidate,
       yawDegrees,
     });
 
@@ -464,14 +478,16 @@ function Panoviewer() {
     const baseAzimuth = normalizeDegrees(toFiniteOr(link?.azimuth, calculateAzimuthDegrees(currentPanophoto, link?.target)));
     const currentOffset = normalizeOffsetDegrees(link?.azimuthOffset);
     const newOffset = normalizeOffsetDegrees(yawDegrees - baseAzimuth);
+    const offsetDelta = Math.abs(((newOffset - currentOffset + 540) % 360) - 180);
 
     console.log('[Panoviewer] offset computation', {
       baseAzimuth,
       currentOffset,
       newOffset,
+      offsetDelta,
     });
 
-    if (Math.abs(newOffset - currentOffset) < 0.1) {
+    if (offsetDelta < 0.1) {
       setStatusMessage('Marker offset unchanged. Click another direction or select a different marker.');
       console.log('[Panoviewer] offset change below threshold');
       return;
@@ -654,10 +670,27 @@ function Panoviewer() {
 
         const options = panophoto.project.levels.map((level) => {
           const levelId = normalizeId(level?._id);
+          const storedStartId = normalizeId(level?.startPanophoto) || null;
+
+          const storedStartPhoto = storedStartId
+            ? photos.find((photo) => normalizeId(photo?._id) === storedStartId)
+            : null;
+
+          const storedMatchesLevel = storedStartPhoto
+            ? normalizeId(storedStartPhoto.levelId) === levelId
+            : false;
+
+          const fallbackPhotoId = getFirstPhotoId(levelId);
+          const chosenStartId = storedMatchesLevel
+            ? normalizeId(storedStartPhoto?._id)
+            : fallbackPhotoId;
+
           return {
             id: levelId,
             name: level?.name || 'Level',
-            firstPhotoId: getFirstPhotoId(levelId),
+            firstPhotoId: chosenStartId,
+            startPhotoId: storedMatchesLevel ? normalizeId(storedStartPhoto?._id) : null,
+            fallbackPhotoId,
           };
         });
 

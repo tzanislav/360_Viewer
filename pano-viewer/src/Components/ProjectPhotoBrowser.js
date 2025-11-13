@@ -44,6 +44,7 @@ function ProjectPhotoBrowser({
   deletingPhotoIds = [],
   resolvedActiveLevelId,
   levelNameById,
+  levelStartPhotoIdMap,
   onSelectPhoto,
   onDeletePhoto,
   normalizeId = defaultNormalizeId,
@@ -68,6 +69,16 @@ function ProjectPhotoBrowser({
               photoLevelId && resolvedActiveLevelId && photoLevelId !== resolvedActiveLevelId
             );
             const isUnplaced = !photoLevelId;
+            const isProjectStart = photo._id === resolvedStartPhotoId;
+            const levelStartId = photoLevelId
+              ? levelStartPhotoIdMap?.get?.(photoLevelId) || null
+              : null;
+            const isLevelStart = Boolean(levelStartId && levelStartId === photo._id);
+            const startBadge = isProjectStart
+              ? 'Project Start'
+              : isLevelStart
+              ? 'Level Start'
+              : null;
 
             return (
               <ProjectPhotoThumbnail
@@ -76,7 +87,7 @@ function ProjectPhotoBrowser({
                 imageUrl={imageUrl}
                 isSelected={photo._id === selectedPhotoId}
                 isLinkSource={linkSourceId === photo._id}
-                isStart={photo._id === resolvedStartPhotoId}
+                startBadge={startBadge}
                 isBusy={isDeleting}
                 placementLabel={placementLabel}
                 isInactivePlacement={isInactivePlacement}

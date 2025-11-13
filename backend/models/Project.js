@@ -22,6 +22,11 @@ const levelSchema = new mongoose.Schema(
       trim: true,
       default: null,
     },
+    startPanophoto: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Panophoto',
+      default: null,
+    },
   },
   { _id: true }
 );
@@ -71,6 +76,7 @@ const projectSchema = new mongoose.Schema(
             index: 0,
             backgroundImageUrl: this.canvasBackgroundImageUrl || null,
             backgroundImageS3Key: this.canvasBackgroundImageS3Key || null,
+            startPanophoto: null,
           },
         ];
       },

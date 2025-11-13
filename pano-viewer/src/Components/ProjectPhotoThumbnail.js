@@ -6,7 +6,7 @@ function ProjectPhotoThumbnail({
   imageUrl,
   isSelected = false,
   isLinkSource = false,
-  isStart = false,
+  startBadge = null,
   isBusy = false,
   placementLabel,
   isInactivePlacement = false,
@@ -15,11 +15,12 @@ function ProjectPhotoThumbnail({
   onDelete,
 }) {
   const name = label || 'Photo';
+  const hasStartBadge = Boolean(startBadge);
   const classNames = [
     'project-photo-thumb',
     isSelected ? 'selected' : '',
     isLinkSource ? 'linking-source' : '',
-    isStart ? 'start' : '',
+    hasStartBadge ? 'start' : '',
     isInactivePlacement ? 'inactive-placement' : '',
     isUnplaced ? 'unplaced' : '',
     !imageUrl ? 'no-image' : '',
@@ -56,7 +57,9 @@ function ProjectPhotoThumbnail({
 
   return (
     <div className={containerClassNames}>
-      {isStart ? <span className="project-photo-thumb-badge">Start</span> : null}
+      {hasStartBadge ? (
+        <span className="project-photo-thumb-badge">{startBadge}</span>
+      ) : null}
       <button type="button" className={classNames} onClick={handleThumbnailClick} disabled={isBusy}>
         {imageUrl ? (
           <span className="project-photo-thumb-image-wrapper" aria-hidden="true">

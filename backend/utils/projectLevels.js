@@ -47,6 +47,11 @@ async function ensureProjectLevels(project) {
         level.backgroundImageS3Key = project.canvasBackgroundImageS3Key || null;
         mutated = true;
       }
+
+      if (typeof level.startPanophoto === 'undefined') {
+        level.startPanophoto = null;
+        mutated = true;
+      }
     });
   }
 

@@ -7,7 +7,7 @@ function ProjectCanvasMarker({
   y = 0,
   isSelected = false,
   isLinkSource = false,
-  isStart = false,
+  startBadge = null,
   isDragging = false,
   showLabel = true,
   onClick,
@@ -17,12 +17,13 @@ function ProjectCanvasMarker({
 }) {
   const name = label || 'Photo';
   const pointerCapturedRef = useRef(false);
+  const hasStartBadge = Boolean(startBadge);
 
   const classNames = [
     'project-canvas-marker',
     isSelected ? 'selected' : '',
     isLinkSource ? 'linking-source' : '',
-    isStart ? 'start' : '',
+    hasStartBadge ? 'start' : '',
     isDragging ? 'dragging' : '',
   ]
     .filter(Boolean)
@@ -112,7 +113,9 @@ function ProjectCanvasMarker({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
     >
-      {isStart ? <span className="project-canvas-start-badge">Start</span> : null}
+      {hasStartBadge ? (
+        <span className="project-canvas-start-badge">{startBadge}</span>
+      ) : null}
       <div className="project-canvas-dot" />
       {showLabel ? <span className="project-canvas-label">{name}</span> : null}
     </div>

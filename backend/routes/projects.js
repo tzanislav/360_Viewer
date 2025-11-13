@@ -68,6 +68,10 @@ const projectPopulation = [
     path: 'startPanophoto',
     select: 'name imageUrl xPosition yPosition createdAt levelId',
   },
+  {
+    path: 'levels.startPanophoto',
+    select: 'name imageUrl thumbnailUrl levelId createdAt',
+  },
 ];
 
 router.get('/', async (req, res) => {
@@ -485,6 +489,73 @@ router.post('/:id/levels', async (req, res) => {
     message: 'Level created',
     project,
     levelId: newLevel?._id || null,
+  });
+});
+
+router.patch('/:id/levels/:levelId/start', async (req, res) => {
+  const { id, levelId } = req.params;
+  const rawPanophotoId = req.body?.panophotoId;
+
+  const { error, project, level } = await loadProjectLevel(id, levelId);
+
+  if (error) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+
+  let nextStartId = null;
+
+  if (rawPanophotoId !== undefined && rawPanophotoId !== null && rawPanophotoId !== '' && rawPanophotoId !== 'null') {
+    if (!mongoose.isValidObjectId(rawPanophotoId)) {
+      return res.status(400).json({ message: 'Invalid panophoto id supplied' });
+    }
+
+    const panophoto = await Panophoto.findById(rawPanophotoId).select('project levelId');
+
+    if (!panophoto) {
+      return res.status(404).json({ message: 'Panophoto not found' });
+    }
+
+    if (panophoto.project.toString() !== project._id.toString()) {
+      return res.status(400).json({ message: 'Panophoto does not belong to this project' });
+    }
+
+    const panophotoLevelId = panophoto.levelId ? panophoto.levelId.toString() : null;
+
+    if (!panophotoLevelId || panophotoLevelId !== level._id.toString()) {
+      return res.status(400).json({ message: 'Panophoto is not placed on this level' });
+    }
+
+    nextStartId = panophoto._id;
+  }
+
+  const currentStartId = level.startPanophoto ? level.startPanophoto.toString() : null;
+  const resolvedNextId = nextStartId ? nextStartId.toString() : null;
+
+  if (currentStartId === resolvedNextId) {
+    await project.populate(projectPopulation);
+    return res.json({
+      message: resolvedNextId ? 'Level start photo unchanged' : 'Level start photo already cleared',
+      project,
+      levelId: level._id,
+    });
+  }
+
+  level.startPanophoto = nextStartId;
+  project.markModified('levels');
+
+  try {
+    await project.save();
+    await ensureProjectLevels(project);
+    await project.populate(projectPopulation);
+  } catch (saveError) {
+    console.error('Failed to update level start photo:', saveError);
+    return res.status(500).json({ message: 'Unable to update level start photo' });
+  }
+
+  return res.json({
+    message: resolvedNextId ? 'Level start photo updated' : 'Level start photo cleared',
+    project,
+    levelId: level._id,
   });
 });
 
