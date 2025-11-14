@@ -4,7 +4,7 @@ import React from 'react';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import Home from './Pages/Home';
 import PanophotoList from './Pages/PanophotoList';
-import Panoviewer from './Components/Panoviewer';
+import Panoviewer from './Pages/Panoviewer';
 import ProjectEditor from './Pages/ProjectEditor';
 import Projects from './Pages/Projects';
 import Navigation from './Components/Navigation';

@@ -1,9 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import ProjectCanvasMarker from '../Components/ProjectCanvasMarker';
-import ProjectPhotoBrowser from '../Components/ProjectPhotoBrowser';
+import ProjectPhotoBrowser from '../Components/ProjectEditor/ProjectPhotoBrowser';
+import ProjectPhotoUploadForm from '../Components/ProjectEditor/ProjectPhotoUploadForm';
+import ProjectBackgroundPanel from '../Components/ProjectEditor/ProjectBackgroundPanel';
+import ProjectCanvasPanel from '../Components/ProjectEditor/ProjectCanvasPanel';
 import '../CSS/styles.css';
 import { normalizeId } from '../utils/panophotoMath';
+import useLinkLines from '../hooks/useLinkLines';
+import useProjectLevelDerivedState from '../hooks/useProjectLevelDerivedState';
+import useCanvasBackgroundState from '../hooks/useCanvasBackgroundState';
 
 // clamp01 forces numeric input into the [0, 1] range for canvas coordinates.
 const clamp01 = (value) => {
@@ -26,8 +31,6 @@ function ProjectEditor() {
   const [photos, setPhotos] = useState([]);
   const [selectedPhotoId, setSelectedPhotoId] = useState(null);
   const [statusMessage, setStatusMessage] = useState(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadFiles, setUploadFiles] = useState([]);
   const [linkSourceId, setLinkSourceId] = useState(null);
   const [isLinkPending, setIsLinkPending] = useState(false);
   const [deletingPhotoIds, setDeletingPhotoIds] = useState([]);
@@ -43,33 +46,37 @@ function ProjectEditor() {
     levelId: null,
   });
   const suppressClickRef = useRef(false);
-  const [backgroundFile, setBackgroundFile] = useState(null);
-  const [isBackgroundUploading, setIsBackgroundUploading] = useState(false);
   const [isBackgroundVisible, setIsBackgroundVisible] = useState(false);
   const [showCanvasLabels, setShowCanvasLabels] = useState(true);
   const [canvasAspectRatio, setCanvasAspectRatio] = useState(DEFAULT_CANVAS_ASPECT_RATIO);
   const [activeLevelId, setActiveLevelId] = useState(null);
   const [isLevelRequestPending, setIsLevelRequestPending] = useState(false);
   const [isLevelStartPending, setIsLevelStartPending] = useState(false);
-  const backgroundInputRef = useRef(null);
 
-  const selectedPhoto = useMemo(
-    () => photos.find((photo) => photo._id === selectedPhotoId),
-    [photos, selectedPhotoId]
-  );
-
-  const linkingSourcePhoto = useMemo(
-    () => photos.find((photo) => photo._id === linkSourceId),
-    [photos, linkSourceId]
-  );
-
-  const levels = useMemo(() => {
-    if (!Array.isArray(activeProject?.levels)) {
-      return [];
-    }
-
-    return activeProject.levels;
-  }, [activeProject?.levels]);
+  const {
+    selectedPhoto,
+    levels,
+    activeLevel,
+    resolvedActiveLevelId,
+    isSelectedOnActiveLevel,
+    visiblePhotos,
+    visiblePhotoMap,
+    levelStartPhotoIdMap,
+    levelNameById,
+    resolvedActiveLevelStartPhotoId,
+    storedActiveLevelStartPhotoId,
+    isSelectedStoredLevelStart,
+    resolvedStartPhotoId,
+    resolvedStartPhoto,
+    isSelectedStoredStart,
+    levelStartSummary,
+  } = useProjectLevelDerivedState({
+    activeProject,
+    photos,
+    selectedPhotoId,
+    startPhotoId,
+    activeLevelId,
+  });
 
   useEffect(() => {
     if (!levels.length) {
@@ -92,272 +99,27 @@ function ProjectEditor() {
       }
       return normalizedIds[0];
     });
-  }, [levels]);
+  }, [levels, setActiveLevelId]);
 
-  const activeLevel = useMemo(() => {
-    if (!levels.length) {
-      return null;
-    }
-
-    if (activeLevelId) {
-      const match = levels.find((level) => normalizeId(level?._id) === activeLevelId);
-      if (match) {
-        return match;
-      }
-    }
-
-    return levels[0] || null;
-  }, [levels, activeLevelId]);
-
-  const resolvedActiveLevelId = useMemo(
-    () => (activeLevel ? normalizeId(activeLevel._id) : null),
-    [activeLevel]
+  const linkingSourcePhoto = useMemo(
+    () => photos.find((photo) => photo._id === linkSourceId),
+    [photos, linkSourceId]
   );
+  const linkLines = useLinkLines(visiblePhotos, visiblePhotoMap);
 
-  const selectedPhotoLevelId = normalizeId(selectedPhoto?.levelId);
-  const isSelectedOnActiveLevel = Boolean(
-    selectedPhotoLevelId && resolvedActiveLevelId && selectedPhotoLevelId === resolvedActiveLevelId
-  );
-
-  const visiblePhotos = useMemo(() => {
-    if (!resolvedActiveLevelId) {
-      return [];
-    }
-
-    return photos.filter((photo) => normalizeId(photo.levelId) === resolvedActiveLevelId);
-  }, [photos, resolvedActiveLevelId]);
-
-  const visiblePhotoMap = useMemo(() => {
-    const map = new Map();
-
-    visiblePhotos.forEach((photo) => {
-      map.set(photo._id, photo);
-    });
-
-    return map;
-  }, [visiblePhotos]);
-
-  const photosByLevel = useMemo(() => {
-    const map = new Map();
-
-    photos.forEach((photo) => {
-      const levelId = normalizeId(photo.levelId);
-
-      if (!levelId) {
-        return;
-      }
-
-      if (!map.has(levelId)) {
-        map.set(levelId, []);
-      }
-
-      map.get(levelId).push(photo);
-    });
-
-    map.forEach((list) => {
-      list.sort((a, b) => {
-        const aTime = new Date(a?.createdAt || 0).getTime();
-        const bTime = new Date(b?.createdAt || 0).getTime();
-        return aTime - bTime;
-      });
-    });
-
-    return map;
-  }, [photos]);
-
-  const levelStartPhotoIdMap = useMemo(() => {
-    const map = new Map();
-
-    if (!Array.isArray(levels) || levels.length === 0) {
-      return map;
-    }
-
-    levels.forEach((level) => {
-      const levelId = normalizeId(level?._id);
-
-      if (!levelId) {
-        return;
-      }
-
-      const storedId = normalizeId(level?.startPanophoto) || null;
-      const levelPhotos = photosByLevel.get(levelId) || [];
-      const storedMatch = storedId
-        ? levelPhotos.find((photo) => normalizeId(photo?._id) === storedId)
-        : null;
-
-      if (storedMatch) {
-        const normalizedStored = normalizeId(storedMatch?._id);
-
-        if (normalizedStored) {
-          map.set(levelId, normalizedStored);
-          return;
-        }
-      }
-
-      if (levelPhotos.length > 0) {
-        const fallbackId = normalizeId(levelPhotos[0]?._id);
-
-        if (fallbackId) {
-          map.set(levelId, fallbackId);
-        }
-      }
-    });
-
-    return map;
-  }, [levels, photosByLevel]);
-
-  const levelNameById = useMemo(() => {
-    const map = new Map();
-
-    levels.forEach((level) => {
-      const levelId = normalizeId(level?._id);
-
-      if (levelId) {
-        map.set(levelId, level.name || `Level ${(level.index ?? 0) + 1}`);
-      }
-    });
-
-    return map;
-  }, [levels]);
-
-  const linkLines = useMemo(() => {
-    const segments = [];
-    const seenPairs = new Set();
-
-    visiblePhotos.forEach((photo) => {
-      if (!Array.isArray(photo.linkedPhotos) || photo.linkedPhotos.length === 0) {
-        return;
-      }
-
-      photo.linkedPhotos.forEach((linkedRef) => {
-        const linkedId = normalizeId(linkedRef);
-
-        if (!linkedId) {
-          return;
-        }
-
-        const partner = visiblePhotoMap.get(linkedId);
-
-        if (!partner) {
-          return;
-        }
-
-        const key = [photo._id, partner._id].sort().join('::');
-
-        if (seenPairs.has(key)) {
-          return;
-        }
-
-        seenPairs.add(key);
-        segments.push({
-          id: key,
-          x1: (photo.xPosition ?? 0) * 100,
-          y1: (photo.yPosition ?? 0) * 100,
-          x2: (partner.xPosition ?? 0) * 100,
-          y2: (partner.yPosition ?? 0) * 100,
-        });
-      });
-    });
-
-    return segments;
-  }, [visiblePhotoMap, visiblePhotos]);
-
-  const resolvedActiveLevelStartPhotoId = useMemo(() => {
-    if (!resolvedActiveLevelId) {
-      return null;
-    }
-
-    return levelStartPhotoIdMap.get(resolvedActiveLevelId) || null;
-  }, [levelStartPhotoIdMap, resolvedActiveLevelId]);
-
-  const resolvedActiveLevelStartPhoto = useMemo(() => {
-    if (!resolvedActiveLevelStartPhotoId) {
-      return null;
-    }
-
-    return photos.find((photo) => photo._id === resolvedActiveLevelStartPhotoId) || null;
-  }, [photos, resolvedActiveLevelStartPhotoId]);
-
-  const storedActiveLevelStartPhotoId = normalizeId(activeLevel?.startPanophoto) || null;
-
-  const isSelectedStoredLevelStart = Boolean(
-    selectedPhotoId &&
-      storedActiveLevelStartPhotoId &&
-      selectedPhotoId === storedActiveLevelStartPhotoId
-  );
-
-  const fallbackStartPhoto = useMemo(() => {
-    if (!Array.isArray(photos) || photos.length === 0) {
-      return null;
-    }
-
-    const sorted = [...photos].sort((a, b) => {
-      const aTimeRaw = new Date(a?.createdAt || 0).getTime();
-      const bTimeRaw = new Date(b?.createdAt || 0).getTime();
-      const aTime = Number.isFinite(aTimeRaw) ? aTimeRaw : 0;
-      const bTime = Number.isFinite(bTimeRaw) ? bTimeRaw : 0;
-      return aTime - bTime;
-    });
-
-    return sorted[0] || null;
-  }, [photos]);
-
-  const resolvedStartPhotoId = useMemo(() => {
-    if (startPhotoId) {
-      return startPhotoId;
-    }
-
-    return fallbackStartPhoto?._id || null;
-  }, [startPhotoId, fallbackStartPhoto]);
-
-  const resolvedStartPhoto = useMemo(() => {
-    if (!resolvedStartPhotoId) {
-      return null;
-    }
-
-    return (
-      photos.find((photo) => photo._id === resolvedStartPhotoId) || fallbackStartPhoto || null
-    );
-  }, [photos, resolvedStartPhotoId, fallbackStartPhoto]);
-  const resolvedBackgroundUrl =
-    (activeLevel && activeLevel.backgroundImageUrl) ||
-    ((activeLevel?.index ?? 0) === 0 ? activeProject?.canvasBackgroundImageUrl : null);
-
-  const isSelectedStoredStart = Boolean(
-    selectedPhotoId && startPhotoId && selectedPhotoId === startPhotoId
-  );
-  const hasBackgroundImage = Boolean(resolvedBackgroundUrl);
-  const shouldShowBackground = hasBackgroundImage && isBackgroundVisible;
-  const resolvedCanvasAspectRatio = useMemo(() => {
-    if (!Number.isFinite(canvasAspectRatio) || canvasAspectRatio <= 0) {
-      return DEFAULT_CANVAS_ASPECT_RATIO;
-    }
-
-    return Math.min(Math.max(canvasAspectRatio, 0.25), 4);
-  }, [canvasAspectRatio]);
-
-  const canvasPaddingStyle = useMemo(
-    () => ({ paddingTop: `${resolvedCanvasAspectRatio * 100}%` }),
-    [resolvedCanvasAspectRatio]
-  );
-
-  const levelStartSummary = useMemo(() => {
-    if (!resolvedActiveLevelId) {
-      return '—';
-    }
-
-    if (resolvedActiveLevelStartPhoto) {
-      const label = resolvedActiveLevelStartPhoto.name || 'Photo';
-
-      if (storedActiveLevelStartPhotoId) {
-        return label;
-      }
-
-      return `${label} (fallback)`;
-    }
-
-    return 'Not set';
-  }, [resolvedActiveLevelId, resolvedActiveLevelStartPhoto, storedActiveLevelStartPhotoId]);
+  const {
+    resolvedBackgroundUrl,
+    hasBackgroundImage,
+    shouldShowBackground,
+    resolvedCanvasAspectRatio,
+    canvasPaddingStyle,
+  } = useCanvasBackgroundState({
+    activeProject,
+    activeLevel,
+    isBackgroundVisible,
+    canvasAspectRatio,
+    defaultCanvasAspectRatio: DEFAULT_CANVAS_ASPECT_RATIO,
+  });
 
   // loadActiveProject fetches currently active project metadata from the API.
   const loadActiveProject = useCallback(async () => {
@@ -418,10 +180,6 @@ function ProjectEditor() {
   }, [activeProject]);
 
   useEffect(() => {
-    if (backgroundInputRef.current) {
-      backgroundInputRef.current.value = '';
-    }
-    setBackgroundFile(null);
     setIsBackgroundVisible(Boolean(resolvedBackgroundUrl));
   }, [resolvedBackgroundUrl]);
 
@@ -486,136 +244,6 @@ function ProjectEditor() {
     setLinkSourceId(null);
   }, [resolvedActiveLevelId]);
 
-  // handleFileChange caches selected upload files before submit.
-  const handleFileChange = (event) => {
-    setUploadFiles(Array.from(event.target.files || []));
-  };
-
-  // handleUpload posts selected pano images and refreshes the list on success.
-  const handleUpload = async (event) => {
-    event.preventDefault();
-
-    if (!activeProject) {
-      setStatusMessage({ type: 'error', message: 'Create or activate a project before uploading.' });
-      return;
-    }
-
-    if (uploadFiles.length === 0) {
-      setStatusMessage({ type: 'error', message: 'Select at least one image to upload.' });
-      return;
-    }
-
-    setIsUploading(true);
-    setStatusMessage(null);
-
-    const formData = new FormData();
-    uploadFiles.forEach((file) => formData.append('images', file));
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/panophotos`, {
-        method: 'POST',
-        credentials: 'include',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorBody = await response
-          .json()
-          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
-        throw new Error(errorBody.message || 'Failed to upload pano photos');
-      }
-
-      const payload = await response.json();
-      setPhotos((prev) => [...payload.panophotos, ...prev]);
-      setUploadFiles([]);
-      event.target.reset();
-      setStatusMessage({ type: 'success', message: `Uploaded ${payload.panophotos.length} photo(s).` });
-      await loadActiveProject();
-    } catch (error) {
-      setStatusMessage({ type: 'error', message: error.message });
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  // handleBackgroundFileChange tracks the chosen background image file.
-  const handleBackgroundFileChange = useCallback((event) => {
-    const file = event.target?.files && event.target.files[0] ? event.target.files[0] : null;
-    setBackgroundFile(file);
-    setStatusMessage(null);
-  }, [setBackgroundFile, setStatusMessage]);
-
-  // handleBackgroundUpload sends the canvas background to the server.
-  const handleBackgroundUpload = useCallback(async (event) => {
-    event.preventDefault();
-
-    if (!activeProject?._id) {
-      setStatusMessage({ type: 'error', message: 'Create or activate a project before uploading a background.' });
-      return;
-    }
-
-    if (!resolvedActiveLevelId) {
-      setStatusMessage({ type: 'error', message: 'Select a level before uploading a background.' });
-      return;
-    }
-
-    if (!backgroundFile) {
-      setStatusMessage({ type: 'error', message: 'Select an image to upload as the canvas background.' });
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('background', backgroundFile);
-    formData.append('levelId', resolvedActiveLevelId);
-
-    setIsBackgroundUploading(true);
-    setStatusMessage(null);
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/projects/${activeProject._id}/background`, {
-        method: 'PATCH',
-        credentials: 'include',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorBody = await response
-          .json()
-          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
-        throw new Error(errorBody.message || 'Failed to upload canvas background');
-      }
-
-      const payload = await response.json();
-      setActiveProject(payload.project);
-      if (payload.levelId) {
-        setActiveLevelId(normalizeId(payload.levelId));
-      }
-      setIsBackgroundVisible(true);
-      setStatusMessage({
-        type: 'success',
-        message: `Background updated for ${activeLevel?.name || 'the active level'}.`,
-      });
-      setBackgroundFile(null);
-      if (backgroundInputRef.current) {
-        backgroundInputRef.current.value = '';
-      }
-    } catch (error) {
-      setStatusMessage({ type: 'error', message: error.message });
-    } finally {
-      setIsBackgroundUploading(false);
-    }
-  }, [
-    activeLevel,
-    activeProject,
-    apiBaseUrl,
-    backgroundFile,
-    resolvedActiveLevelId,
-    setActiveLevelId,
-    setActiveProject,
-    setIsBackgroundVisible,
-    setStatusMessage,
-  ]);
-
   // mergeUpdatedPhotos applies partial API updates to the local photo list.
   const mergeUpdatedPhotos = useCallback((updatedList) => {
     if (!Array.isArray(updatedList) || updatedList.length === 0) {
@@ -626,98 +254,15 @@ function ProjectEditor() {
       const updateMap = new Map(updatedList.map((photo) => [photo._id, photo]));
       return prev.map((photo) => (updateMap.has(photo._id) ? { ...photo, ...updateMap.get(photo._id) } : photo));
     });
-  }, []);
+  }, [setPhotos]);
 
-  // handleDeleteBackground removes the stored canvas background image.
-  const handleDeleteBackground = useCallback(async () => {
-    if (!activeProject?._id) {
+  const prependUploadedPhotos = useCallback((newPhotos) => {
+    if (!Array.isArray(newPhotos) || newPhotos.length === 0) {
       return;
     }
 
-    if (!resolvedActiveLevelId) {
-      setStatusMessage({ type: 'error', message: 'Select a level before removing its background.' });
-      return;
-    }
-
-    if (!hasBackgroundImage) {
-      setStatusMessage({ type: 'info', message: 'No background image to remove for this level.' });
-      return;
-    }
-
-    if (
-      !window.confirm(
-        `Remove the background image for ${activeLevel?.name || 'this level'}?`
-      )
-    ) {
-      return;
-    }
-
-    setIsBackgroundUploading(true);
-    setStatusMessage(null);
-
-    try {
-      const response = await fetch(
-        `${apiBaseUrl}/api/projects/${activeProject._id}/background?levelId=${resolvedActiveLevelId}`,
-        {
-        method: 'DELETE',
-        credentials: 'include',
-        }
-      );
-
-      if (!response.ok) {
-        const errorBody = await response
-          .json()
-          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
-        throw new Error(errorBody.message || 'Failed to remove canvas background');
-      }
-
-      const payload = await response.json();
-      setActiveProject(payload.project);
-      if (payload.levelId) {
-        setActiveLevelId(normalizeId(payload.levelId));
-      }
-      setIsBackgroundVisible(false);
-      setBackgroundFile(null);
-      if (backgroundInputRef.current) {
-        backgroundInputRef.current.value = '';
-      }
-      setStatusMessage({
-        type: 'success',
-        message: `Background removed from ${activeLevel?.name || 'the active level'}.`,
-      });
-    } catch (error) {
-      setStatusMessage({ type: 'error', message: error.message });
-    } finally {
-      setIsBackgroundUploading(false);
-    }
-  }, [
-    activeLevel,
-    activeProject,
-    apiBaseUrl,
-    hasBackgroundImage,
-    resolvedActiveLevelId,
-    setActiveLevelId,
-    setActiveProject,
-    setBackgroundFile,
-    setIsBackgroundVisible,
-    setStatusMessage,
-  ]);
-
-  // handleToggleBackgroundVisibility toggles whether the background is shown on canvas.
-  const handleToggleBackgroundVisibility = useCallback(() => {
-    if (!hasBackgroundImage) {
-      return;
-    }
-
-    setIsBackgroundVisible((prev) => {
-      const next = !prev;
-      setStatusMessage({
-        type: 'info',
-        message: next ? 'Canvas background shown.' : 'Canvas background hidden.',
-      });
-      return next;
-    });
-  }, [hasBackgroundImage, setIsBackgroundVisible, setStatusMessage]);
+    setPhotos((prev) => [...newPhotos, ...prev]);
+  }, [setPhotos]);
 
   // handleToggleCanvasLabels shows or hides marker name labels on the canvas.
   const handleToggleCanvasLabels = useCallback((event) => {
@@ -1693,73 +1238,27 @@ function ProjectEditor() {
         </header>
 
         <section className="project-upload-panel">
-          <div>
-            <h3>Upload Photos</h3>
-            <p className="canvas-helper-text">
-              Upload multiple images at once. Names and storage keys are generated automatically.
-            </p>
-          </div>
-          <form onSubmit={handleUpload} className="project-upload-form">
-            <input
-              type="file"
-              name="images"
-              accept="image/*"
-              multiple
-              onChange={handleFileChange}
-            />
-            {uploadFiles.length > 0 && (
-              <p className="project-upload-file-info">
-                Selected files: {uploadFiles.map((file) => file.name).join(', ')}
-              </p>
-            )}
-            <button type="submit" disabled={isUploading}>
-              {isUploading ? 'Uploading…' : 'Upload Photos'}
-            </button>
-          </form>
-          <div className="project-background-panel">
-            <h3>Canvas Background</h3>
-            <p className="project-background-level-label">
-              Level: {activeLevel?.name || 'No level selected'}
-            </p>
-            <p className="project-background-level-label">
-              Level start: {levelStartSummary}
-            </p>
-            {hasBackgroundImage ? (
-              <div
-                className="project-background-preview"
-                style={{ backgroundImage: `url(${resolvedBackgroundUrl})` }}
-              />
-            ) : (
-              <p className="canvas-helper-text">No background image uploaded yet.</p>
-            )}
-            <form className="project-background-form" onSubmit={handleBackgroundUpload}>
-              <input
-                ref={backgroundInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleBackgroundFileChange}
-              />
-              <button type="submit" disabled={!backgroundFile || isBackgroundUploading}>
-                {isBackgroundUploading ? 'Uploading…' : 'Upload Background'}
-              </button>
-            </form>
-            <div className="project-background-actions">
-              <button
-                type="button"
-                onClick={handleToggleBackgroundVisibility}
-                disabled={!hasBackgroundImage || isBackgroundUploading}
-              >
-                {shouldShowBackground ? 'Hide Background' : 'Show Background'}
-              </button>
-              <button
-                type="button"
-                onClick={handleDeleteBackground}
-                disabled={!hasBackgroundImage || isBackgroundUploading}
-              >
-                Delete Background
-              </button>
-            </div>
-          </div>
+          <ProjectPhotoUploadForm
+            activeProjectId={activeProject?._id || null}
+            apiBaseUrl={apiBaseUrl}
+            onPhotosPrepend={prependUploadedPhotos}
+            onReloadProject={loadActiveProject}
+            setStatusMessage={setStatusMessage}
+          />
+          <ProjectBackgroundPanel
+            activeProjectId={activeProject?._id || null}
+            apiBaseUrl={apiBaseUrl}
+            activeLevelName={activeLevel?.name || null}
+            resolvedActiveLevelId={resolvedActiveLevelId}
+            levelStartSummary={levelStartSummary}
+            hasBackgroundImage={hasBackgroundImage}
+            resolvedBackgroundUrl={resolvedBackgroundUrl}
+            isBackgroundVisible={isBackgroundVisible}
+            setIsBackgroundVisible={setIsBackgroundVisible}
+            setStatusMessage={setStatusMessage}
+            onProjectUpdate={setActiveProject}
+            onActiveLevelChange={setActiveLevelId}
+          />
         </section>
 
         <div className="project-editor-body">
@@ -1777,186 +1276,45 @@ function ProjectEditor() {
             normalizeId={normalizeId}
           />
 
-          <div className="project-canvas-wrapper">
-            <div className="project-level-tabs">
-              <div className="project-level-tab-list">
-                {levels.map((level) => {
-                  const levelId = normalizeId(level._id);
-                  const isActiveLevel = levelId === resolvedActiveLevelId;
-
-                  return (
-                    <button
-                      type="button"
-                      key={level._id || levelId}
-                      className={`project-level-tab${isActiveLevel ? ' active' : ''}`}
-                      onClick={() => handleSelectLevel(levelId)}
-                      disabled={!levelId || (isLevelRequestPending && !isActiveLevel)}
-                    >
-                      {level.name}
-                    </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  className="project-level-tab add"
-                  onClick={handleAddLevel}
-                  disabled={isLevelRequestPending}
-                >
-                  + Add Level
-                </button>
-              </div>
-              <div className="project-level-tab-actions">
-                <button
-                  type="button"
-                  onClick={handleRenameLevel}
-                  disabled={!resolvedActiveLevelId || isLevelRequestPending}
-                >
-                  Rename Level
-                </button>
-              </div>
-            </div>
-
-            <div
-              ref={canvasRef}
-              className={`project-canvas${shouldShowBackground ? ' has-background' : ''}`}
-              style={canvasPaddingStyle}
-              onClick={handleCanvasClick}
-            >
-              {shouldShowBackground ? (
-                <div
-                  className="project-canvas-background"
-                  style={{ backgroundImage: `url(${resolvedBackgroundUrl})` }}
-                />
-              ) : null}
-              <svg className="project-canvas-links" viewBox="0 0 100 100" preserveAspectRatio="none">
-                {linkLines.map((segment) => (
-                  <line
-                    key={segment.id}
-                    x1={segment.x1}
-                    y1={segment.y1}
-                    x2={segment.x2}
-                    y2={segment.y2}
-                    className="project-canvas-link-line"
-                  />
-                ))}
-              </svg>
-              {visiblePhotos.map((photo) => {
-                const isProjectStart = photo._id === resolvedStartPhotoId;
-                const isLevelStart = photo._id === resolvedActiveLevelStartPhotoId;
-                const startBadge = isProjectStart
-                  ? 'Project Start'
-                  : isLevelStart
-                  ? 'Level Start'
-                  : null;
-
-                return (
-                  <ProjectCanvasMarker
-                    key={photo._id}
-                    label={photo.name}
-                    x={photo.xPosition ?? 0}
-                    y={photo.yPosition ?? 0}
-                    isSelected={photo._id === selectedPhotoId}
-                    isLinkSource={linkSourceId === photo._id}
-                    startBadge={startBadge}
-                    isDragging={draggingPhotoId === photo._id}
-                    showLabel={showCanvasLabels}
-                    onClick={(event) => handleMarkerClick(event, photo._id)}
-                    onDragStart={(event) => handleMarkerDragStart(event, photo._id)}
-                    onDrag={(event) => handleMarkerDrag(event, photo._id)}
-                    onDragEnd={(event, metadata) => handleMarkerDragEnd(event, metadata, photo._id)}
-                  />
-                );
-              })}
-            </div>
-
-            <div className="project-canvas-actions">
-              <button
-                type="button"
-                className={`project-link-button${linkSourceId ? ' active' : ''}`}
-                onClick={handleLinkButtonClick}
-                disabled={!selectedPhotoId || isLinkPending}
-              >
-                {linkSourceId ? 'Cancel Linking' : 'Link Photos'}
-              </button>
-              <button
-                type="button"
-                className="project-start-button project-level-start-button"
-                onClick={handleSetLevelStartPhoto}
-                disabled={
-                  !selectedPhotoId ||
-                  !isSelectedOnActiveLevel ||
-                  isLevelStartPending ||
-                  isSelectedStoredLevelStart ||
-                  isLinkPending
-                }
-              >
-                {isSelectedStoredLevelStart ? 'Level Start' : 'Set Level Start'}
-              </button>
-              <button
-                type="button"
-                className="project-start-button"
-                onClick={handleSetStartPhoto}
-                disabled={!selectedPhotoId || isLinkPending || isLevelStartPending || isSelectedStoredStart}
-              >
-                {isSelectedStoredStart ? 'Start Scene' : 'Set as Start'}
-              </button>
-              <button
-                type="button"
-                onClick={handleUnplacePhoto}
-                disabled={!selectedPhotoId || !isSelectedOnActiveLevel || isLinkPending}
-              >
-                Unplace
-              </button>
-              <label className="project-canvas-toggle">
-                <input
-                  type="checkbox"
-                  checked={showCanvasLabels}
-                  onChange={handleToggleCanvasLabels}
-                />
-                Show photo names
-              </label>
-              {linkSourceId && linkingSourcePhoto ? (
-                <span className="project-link-hint">
-                  Select another photo to link with "{linkingSourcePhoto.name}".
-                </span>
-              ) : null}
-            </div>
-
-            {selectedPhoto?.linkedPhotos?.length ? (
-              <div className="project-link-list-wrapper">
-                <h4>Linked Photos</h4>
-                <ul className="project-link-list">
-                  {selectedPhoto.linkedPhotos.map((linkedItem) => {
-                    const linkedId = normalizeId(linkedItem);
-
-                    if (!linkedId) {
-                      return null;
-                    }
-
-                    const linkedPhoto = photos.find((photo) => photo._id === linkedId);
-                    const label = linkedPhoto?.name || 'Photo';
-
-                    return (
-                      <li key={linkedId} className="project-link-item">
-                        <span>{label}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleUnlinkPhoto(linkedId)}
-                          disabled={isLinkPending}
-                        >
-                          Remove Link
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ) : null}
-
-            <p className="canvas-helper-text">
-              Select a photo, click the canvas to place it on this level, or drag existing markers to refine positions.
-            </p>
-          </div>
+          <ProjectCanvasPanel
+            levels={levels}
+            resolvedActiveLevelId={resolvedActiveLevelId}
+            isLevelRequestPending={isLevelRequestPending}
+            onSelectLevel={handleSelectLevel}
+            onAddLevel={handleAddLevel}
+            onRenameLevel={handleRenameLevel}
+            canvasRef={canvasRef}
+            shouldShowBackground={shouldShowBackground}
+            resolvedBackgroundUrl={resolvedBackgroundUrl}
+            canvasPaddingStyle={canvasPaddingStyle}
+            onCanvasClick={handleCanvasClick}
+            linkLines={linkLines}
+            visiblePhotos={visiblePhotos}
+            resolvedStartPhotoId={resolvedStartPhotoId}
+            resolvedActiveLevelStartPhotoId={resolvedActiveLevelStartPhotoId}
+            selectedPhotoId={selectedPhotoId}
+            linkSourceId={linkSourceId}
+            draggingPhotoId={draggingPhotoId}
+            showCanvasLabels={showCanvasLabels}
+            onMarkerClick={handleMarkerClick}
+            onMarkerDragStart={handleMarkerDragStart}
+            onMarkerDrag={handleMarkerDrag}
+            onMarkerDragEnd={handleMarkerDragEnd}
+            onLinkButtonClick={handleLinkButtonClick}
+            isLinkPending={isLinkPending}
+            onSetLevelStartPhoto={handleSetLevelStartPhoto}
+            isSelectedOnActiveLevel={isSelectedOnActiveLevel}
+            isLevelStartPending={isLevelStartPending}
+            isSelectedStoredLevelStart={isSelectedStoredLevelStart}
+            onSetStartPhoto={handleSetStartPhoto}
+            isSelectedStoredStart={isSelectedStoredStart}
+            onUnplacePhoto={handleUnplacePhoto}
+            onToggleCanvasLabels={handleToggleCanvasLabels}
+            linkingSourcePhoto={linkingSourcePhoto}
+            selectedPhoto={selectedPhoto}
+            photos={photos}
+            onUnlinkPhoto={handleUnlinkPhoto}
+          />
         </div>
 
         {statusMessage && (

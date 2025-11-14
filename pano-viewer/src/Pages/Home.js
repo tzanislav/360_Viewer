@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import Panoviewer from "../Components/Panoviewer";
+import Panoviewer from "./Panoviewer";
 import ErrorBoundary from "../Components/ErrorBoundary";
 import StartOverlay from "../Components/StartOverlay";
 

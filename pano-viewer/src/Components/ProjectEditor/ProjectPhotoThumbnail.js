@@ -1,5 +1,5 @@
 import React from 'react';
-import '../CSS/styles.css';
+import '../../CSS/styles.css';
 
 function ProjectPhotoThumbnail({
   label,

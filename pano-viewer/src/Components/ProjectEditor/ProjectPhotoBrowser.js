@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import ProjectPhotoThumbnail from './ProjectPhotoThumbnail';
-import '../CSS/styles.css';
+import '../../CSS/styles.css';
 
 function defaultNormalizeId(value) {
   if (typeof value === 'string') {

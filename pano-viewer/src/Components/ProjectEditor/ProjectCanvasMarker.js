@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import '../CSS/styles.css';
+import '../../CSS/styles.css';
 
 function ProjectCanvasMarker({
   label,
