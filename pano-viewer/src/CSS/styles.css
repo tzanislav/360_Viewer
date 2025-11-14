@@ -1,3 +1,6 @@
+/* ========================================================================== */
+/* Global Application Shell                                                    */
+/* ========================================================================== */
 .App {
   text-align: center;
   width: 100%;
@@ -5,7 +8,9 @@
   position: relative;
 }
 
-/* Marker Information Panel */
+/* ========================================================================== */
+/* Viewer Marker Information Panel                                            */
+/* ========================================================================== */
 .marker-info-panel {
   position: fixed;
   top: 20px;
@@ -71,6 +76,9 @@
   }
 }
 
+/* ========================================================================== */
+/* Photo Sphere Viewer Shell                                                  */
+/* ========================================================================== */
 /* Ensure the photo sphere viewer takes full space */
 .psv-container {
   width: 100% !important;
@@ -113,6 +121,9 @@
   color: white;
 }
 
+/* ========================================================================== */
+/* Generic Status & Upload Feedback                                           */
+/* ========================================================================== */
 .upload-status {
   margin-top: 16px;
   font-weight: 500;
@@ -126,6 +137,9 @@
   color: #b91c1c;
 }
 
+/* ========================================================================== */
+/* Panophoto List Page                                                        */
+/* ========================================================================== */
 .panophoto-list-page {
   max-width: 720px;
   margin: 40px auto;
@@ -235,6 +249,9 @@
   color: #2563eb;
 }
 
+/* ========================================================================== */
+/* Projects Dashboard                                                          */
+/* ========================================================================== */
 .projects-page {
   max-width: 1080px;
   margin: 40px auto;
@@ -365,8 +382,7 @@
 }
 
 .project-editor-page {
-  max-width: 1200px;
-  max-height: 80%;
+  max-width: 90%;
   margin: 40px auto;
   padding: 32px;
   background: #ffffff;
@@ -417,9 +433,15 @@
 .project-editor-header h1 {
   margin-bottom: 4px;
 }
-
+ 
 .project-editor-header p {
   color: #4b5563;
+}
+
+.project-upload-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .project-upload-panel {
@@ -434,7 +456,7 @@
   background: #f8fafc;
 }
 
-.project-upload-panel > div:first-child {
+.project-upload-panel > .project-upload-card {
   flex: 1 1 260px;
 }
 
@@ -474,32 +496,37 @@
 }
 
 .project-editor-body {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 24px;
-  min-height: 0;
-}
-
-.project-photo-panel {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+}
+
+.project-photo-browser {
+
+  max-width: 100%;
+  display: flex;
+  flex-direction: row;
+  flex-wrap:nowrap;
+  align-items: center;
+  justify-content: center;
   gap: 16px;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
   padding: 16px;
   background: #f9fafb;
-  overflow-y: auto;
-  max-height: 75%;
-  min-height: 0;
 }
 
-.project-photo-panel h3 {
+.project-photo-browser h3 {
   margin: 0;
 }
 
-.project-photo-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+.project-photo-browser-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
   gap: 12px;
   flex: 1;
   overflow-y: auto;
@@ -508,7 +535,7 @@
 
 .project-photo-thumb-container {
   position: relative;
-  width: 100%;
+  width: 160px;
 }
 
 .project-photo-thumb-container .project-photo-thumb {
@@ -565,10 +592,8 @@
   margin: 8px;
   padding: 6px 8px;
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.6);
-  font-size: 0.875rem;
+  font-size: 0.6rem;
   text-align: center;
-  backdrop-filter: blur(4px);
 }
 
 .project-photo-thumb-delete {
@@ -675,6 +700,7 @@
 }
 
 .project-canvas-wrapper {
+  width: 60%;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -901,56 +927,19 @@
   gap: 12px;
 }
 
-.project-background-panel {
-  flex: 1 1 260px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 .project-background-level-label {
   margin: 0;
   font-size: 0.85rem;
   color: #475569;
 }
 
-.project-background-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.project-background-form input[type="file"] {
-  padding: 8px 12px;
-  border: 1px dashed #93c5fd;
-  border-radius: 6px;
-  background: #ffffff;
-}
-
-.project-background-form button {
-  align-self: flex-start;
-  padding: 10px 16px;
-  background-color: #2563eb;
-  color: #ffffff;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: background-color 0.2s ease;
-}
-
-.project-background-form button:disabled {
-  background-color: #93c5fd;
-  cursor: not-allowed;
-}
-
-.project-background-actions {
+.project-upload-actions {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
 }
 
-.project-background-actions button {
+.project-upload-actions button {
   padding: 8px 14px;
   border: none;
   border-radius: 6px;
@@ -961,20 +950,20 @@
   transition: background-color 0.2s ease;
 }
 
-.project-background-actions button:disabled {
+.project-upload-actions button:disabled {
   background-color: #94a3b8;
   cursor: not-allowed;
 }
 
-.project-background-actions button:not(:disabled):hover {
+.project-upload-actions button:not(:disabled):hover {
   background-color: #1f2937;
 }
 
-.project-background-actions button:last-child {
+.project-upload-actions button:last-child {
   background-color: #dc2626;
 }
 
-.project-background-actions button:last-child:not(:disabled):hover {
+.project-upload-actions button:last-child:not(:disabled):hover {
   background-color: #b91c1c;
 }
 
@@ -1225,7 +1214,7 @@
     grid-template-columns: 1fr;
   }
 
-  .project-photo-panel {
+  .project-photo-browser {
     order: 2;
     max-height: none;
   }
@@ -1234,7 +1223,7 @@
     order: 1;
   }
 
-  .project-photo-grid {
+  .project-photo-browser-grid {
     overflow-y: visible;
     max-height: none;
   }

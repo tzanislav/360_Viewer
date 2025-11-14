@@ -39,7 +39,6 @@ function defaultNormalizeId(value) {
 function ProjectPhotoBrowser({
   photos = [],
   selectedPhotoId,
-  resolvedStartPhotoId,
   linkSourceId,
   deletingPhotoIds = [],
   resolvedActiveLevelId,
@@ -52,12 +51,11 @@ function ProjectPhotoBrowser({
   const deletingPhotoIdSet = useMemo(() => new Set(deletingPhotoIds), [deletingPhotoIds]);
 
   return (
-    <aside className="project-photo-panel">
-      <h3>Photos</h3>
+    <aside className="project-photo-browser">
       {photos.length === 0 ? (
         <p className="panophoto-status">No photos in this project yet.</p>
       ) : (
-        <div className="project-photo-grid">
+        <div className="project-photo-browser-grid">
           {photos.map((photo) => {
             const imageUrl = photo.thumbnailUrl || photo.imageUrl;
             const isDeleting = deletingPhotoIdSet.has(photo._id);
@@ -69,16 +67,11 @@ function ProjectPhotoBrowser({
               photoLevelId && resolvedActiveLevelId && photoLevelId !== resolvedActiveLevelId
             );
             const isUnplaced = !photoLevelId;
-            const isProjectStart = photo._id === resolvedStartPhotoId;
             const levelStartId = photoLevelId
               ? levelStartPhotoIdMap?.get?.(photoLevelId) || null
               : null;
             const isLevelStart = Boolean(levelStartId && levelStartId === photo._id);
-            const startBadge = isProjectStart
-              ? 'Project Start'
-              : isLevelStart
-              ? 'Level Start'
-              : null;
+            const startBadge = isLevelStart ? 'Start' : null;
 
             return (
               <ProjectPhotoThumbnail

@@ -6,7 +6,8 @@ const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aw
 const { getS3Client } = require('../services/s3Client');
 const Panophoto = require('../models/Panophoto');
 const Project = require('../models/Project');
-const { ensureProjectLevels, loadProjectLevel } = require('../utils/projectLevels');
+const { ensureProjectLevels, loadProjectLevel, clearLevelStartReference } = require('../utils/projectLevels');
+const { unplacePanophoto } = require('../utils/unplacePanophoto');
 
 const router = express.Router();
 const upload = multer({
@@ -50,65 +51,6 @@ async function ensureProjectStartPanophoto(projectId) {
     await project.save();
   } catch (error) {
     console.error('Failed to ensure project start panophoto:', error);
-  }
-}
-
-async function clearLevelStartReference(projectId, panophotoId, levelIds = null) {
-  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(panophotoId)) {
-    return;
-  }
-
-  let project;
-
-  try {
-    project = await Project.findById(projectId);
-  } catch (error) {
-    console.error('Failed to load project for level start cleanup:', error);
-    return;
-  }
-
-  if (!project || !Array.isArray(project.levels) || project.levels.length === 0) {
-    return;
-  }
-
-  const targetId = panophotoId.toString();
-  const limitSet = levelIds
-    ? new Set(
-        (Array.isArray(levelIds) ? levelIds : [levelIds])
-          .map((value) => (value && value.toString ? value.toString() : value))
-          .filter(Boolean)
-      )
-    : null;
-
-  let mutated = false;
-
-  project.levels.forEach((level) => {
-    if (!level || !level._id) {
-      return;
-    }
-
-    const levelId = level._id.toString();
-
-    if (limitSet && !limitSet.has(levelId)) {
-      return;
-    }
-
-    if (level.startPanophoto && level.startPanophoto.toString() === targetId) {
-      level.startPanophoto = null;
-      mutated = true;
-    }
-  });
-
-  if (!mutated) {
-    return;
-  }
-
-  project.markModified('levels');
-
-  try {
-    await project.save();
-  } catch (error) {
-    console.error('Failed to clear level start reference:', error);
   }
 }
 
@@ -761,30 +703,6 @@ router.patch('/:id', async (req, res) => {
 
   const update = {};
   let hasChanges = false;
-  const previousLinkedTargetIds = Array.isArray(panophoto.linkedPhotos)
-    ? panophoto.linkedPhotos
-        .map((link) => {
-          if (!link) {
-            return null;
-          }
-
-          if (link.target && link.target._id) {
-            return link.target._id.toString();
-          }
-
-          if (link.target) {
-            return link.target.toString();
-          }
-
-          if (mongoose.isValidObjectId(link)) {
-            return link.toString();
-          }
-
-          return null;
-        })
-        .filter((value) => value && mongoose.isValidObjectId(value))
-    : [];
-  let removedNeighborIds = [];
 
   if (typeof req.body.name === 'string') {
     update.name = req.body.name.trim();
@@ -815,9 +733,6 @@ router.patch('/:id', async (req, res) => {
     if (rawLevelId === null || rawLevelId === '' || rawLevelId === 'null') {
       update.levelId = null;
       hasChanges = true;
-      if (previousLinkedTargetIds.length) {
-        removedNeighborIds = [...new Set(previousLinkedTargetIds.map((value) => value.toString()))];
-      }
     } else if (!mongoose.isValidObjectId(rawLevelId)) {
       return res.status(400).json({ message: 'Invalid level id' });
     } else {
@@ -838,8 +753,20 @@ router.patch('/:id', async (req, res) => {
 
   Object.assign(panophoto, update);
 
-  if (Object.prototype.hasOwnProperty.call(update, 'levelId') && update.levelId === null) {
-    panophoto.linkedPhotos = [];
+  const isUnplacing = Object.prototype.hasOwnProperty.call(update, 'levelId') && update.levelId === null;
+
+  if (isUnplacing) {
+    try {
+      const result = await unplacePanophoto(panophoto);
+      return res.json({
+        message: 'Panophoto removed from canvas',
+        panophoto: result.panophoto,
+        neighbors: result.neighbors,
+      });
+    } catch (error) {
+      console.error('Failed to unplace panophoto:', error);
+      return res.status(500).json({ message: error.message || 'Failed to unplace panophoto' });
+    }
   }
 
   try {
@@ -855,33 +782,7 @@ router.patch('/:id', async (req, res) => {
     await clearLevelStartReference(panophoto.project, panophoto._id, originalLevelId);
   }
 
-  let neighborIds = [];
-
-  if (removedNeighborIds.length) {
-    const removalUpdates = removedNeighborIds.map((neighborId) =>
-      Panophoto.updateOne(
-        { _id: neighborId },
-        { $pull: { linkedPhotos: { target: panophoto._id } } }
-      )
-    );
-
-    const legacyRemovalUpdates = removedNeighborIds.map((neighborId) =>
-      Panophoto.updateOne(
-        { _id: neighborId },
-        { $pull: { linkedPhotos: panophoto._id } }
-      )
-    );
-
-    try {
-      await Promise.all([...removalUpdates, ...legacyRemovalUpdates]);
-    } catch (error) {
-      console.error('Failed to remove reverse links during unplace:', error);
-    }
-
-    neighborIds = removedNeighborIds;
-  } else {
-    neighborIds = await recalculateLinkAzimuths(panophoto);
-  }
+  const neighborIds = await recalculateLinkAzimuths(panophoto);
 
   try {
     const [updatedPanophoto, neighbors] = await Promise.all([

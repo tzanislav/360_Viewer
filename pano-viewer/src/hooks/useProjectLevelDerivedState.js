@@ -5,7 +5,6 @@ function useProjectLevelDerivedState({
   activeProject,
   photos,
   selectedPhotoId,
-  startPhotoId,
   activeLevelId,
 }) {
   const selectedPhoto = useMemo(
@@ -186,42 +185,24 @@ function useProjectLevelDerivedState({
     [selectedPhotoId, storedActiveLevelStartPhotoId]
   );
 
-  const fallbackStartPhoto = useMemo(() => {
-    if (!Array.isArray(photos) || photos.length === 0) {
+  const firstLevelStartPhotoId = useMemo(() => {
+    const firstLevel = levels[0];
+    const firstLevelId = firstLevel ? normalizeId(firstLevel?._id) : null;
+
+    if (!firstLevelId) {
       return null;
     }
 
-    const sorted = [...photos].sort((a, b) => {
-      const aTimeRaw = new Date(a?.createdAt || 0).getTime();
-      const bTimeRaw = new Date(b?.createdAt || 0).getTime();
-      const aTime = Number.isFinite(aTimeRaw) ? aTimeRaw : 0;
-      const bTime = Number.isFinite(bTimeRaw) ? bTimeRaw : 0;
-      return aTime - bTime;
-    });
+    return levelStartPhotoIdMap.get(firstLevelId) || null;
+  }, [levels, levelStartPhotoIdMap]);
 
-    return sorted[0] || null;
-  }, [photos]);
-
-  const resolvedStartPhotoId = useMemo(() => {
-    if (startPhotoId) {
-      return startPhotoId;
+  const firstLevelStartPhoto = useMemo(() => {
+    if (!firstLevelStartPhotoId) {
+      return null;
     }
 
-    return fallbackStartPhoto?._id || null;
-  }, [startPhotoId, fallbackStartPhoto]);
-
-  const resolvedStartPhoto = useMemo(() => {
-    if (!resolvedStartPhotoId) {
-      return fallbackStartPhoto || null;
-    }
-
-    return photos.find((photo) => photo._id === resolvedStartPhotoId) || fallbackStartPhoto || null;
-  }, [photos, resolvedStartPhotoId, fallbackStartPhoto]);
-
-  const isSelectedStoredStart = useMemo(
-    () => Boolean(selectedPhotoId && startPhotoId && selectedPhotoId === startPhotoId),
-    [selectedPhotoId, startPhotoId]
-  );
+    return photos.find((photo) => photo._id === firstLevelStartPhotoId) || null;
+  }, [photos, firstLevelStartPhotoId]);
 
   const levelStartSummary = useMemo(() => {
     if (!resolvedActiveLevelId) {
@@ -260,9 +241,8 @@ function useProjectLevelDerivedState({
     resolvedActiveLevelStartPhoto,
     storedActiveLevelStartPhotoId,
     isSelectedStoredLevelStart,
-    resolvedStartPhotoId,
-    resolvedStartPhoto,
-    isSelectedStoredStart,
+    firstLevelStartPhotoId,
+    firstLevelStartPhoto,
     levelStartSummary,
   };
 }

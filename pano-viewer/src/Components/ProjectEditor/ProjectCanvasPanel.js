@@ -11,6 +11,7 @@ function ProjectCanvasPanel({
   onSelectLevel,
   onAddLevel,
   onRenameLevel,
+  onRemoveLevel,
   canvasRef,
   shouldShowBackground,
   resolvedBackgroundUrl,
@@ -18,7 +19,6 @@ function ProjectCanvasPanel({
   onCanvasClick,
   linkLines,
   visiblePhotos,
-  resolvedStartPhotoId,
   resolvedActiveLevelStartPhotoId,
   selectedPhotoId,
   linkSourceId,
@@ -34,8 +34,6 @@ function ProjectCanvasPanel({
   isSelectedOnActiveLevel,
   isLevelStartPending,
   isSelectedStoredLevelStart,
-  onSetStartPhoto,
-  isSelectedStoredStart,
   onUnplacePhoto,
   onToggleCanvasLabels,
   linkingSourcePhoto,
@@ -47,6 +45,8 @@ function ProjectCanvasPanel({
   const safePhotos = Array.isArray(visiblePhotos) ? visiblePhotos : [];
   const normalizedSelectedId = normalizeId(selectedPhotoId);
   const normalizedLinkSourceId = normalizeId(linkSourceId);
+  const isLinkModeActive = Boolean(normalizedLinkSourceId);
+  const canRemoveLevel = safeLevels.length > 1;
 
   return (
     <div className="project-canvas-wrapper">
@@ -85,6 +85,13 @@ function ProjectCanvasPanel({
           >
             Rename Level
           </button>
+          <button
+            type="button"
+            onClick={onRemoveLevel}
+            disabled={!resolvedActiveLevelId || isLevelRequestPending || !canRemoveLevel}
+          >
+            Remove Level
+          </button>
         </div>
       </div>
 
@@ -104,9 +111,8 @@ function ProjectCanvasPanel({
         <ProjectCanvasLinkLines segments={linkLines} />
 
         {safePhotos.map((photo) => {
-          const isProjectStart = photo._id === resolvedStartPhotoId;
           const isLevelStart = photo._id === resolvedActiveLevelStartPhotoId;
-          const startBadge = isProjectStart ? 'Project Start' : isLevelStart ? 'Level Start' : null;
+          const startBadge = isLevelStart ? 'Start' : null;
 
           return (
             <ProjectCanvasMarker
@@ -129,18 +135,20 @@ function ProjectCanvasPanel({
       </div>
 
       <div className="project-canvas-actions">
-        <button type="button" onClick={onLinkButtonClick} disabled={isLinkPending || !selectedPhotoId || !linkingSourcePhoto}>
-          {linkingSourcePhoto ? 'Click destination photo' : 'Link Photos'}
+        <button
+          type="button"
+          className={`project-link-button${isLinkModeActive ? ' active' : ''}`}
+          onClick={onLinkButtonClick}
+          disabled={!selectedPhotoId || isLinkPending}
+        >
+          {isLinkModeActive ? 'Cancel Linking' : 'Link Photos'}
         </button>
         <button
           type="button"
           onClick={onSetLevelStartPhoto}
           disabled={!isSelectedOnActiveLevel || isLevelStartPending}
         >
-          {isSelectedStoredLevelStart ? 'Active Level Start Scene' : 'Set Level Start Scene'}
-        </button>
-        <button type="button" onClick={onSetStartPhoto} disabled={!selectedPhotoId}>
-          {isSelectedStoredStart ? 'Global Start Scene' : 'Set Global Start Scene'}
+          {isSelectedStoredLevelStart ? 'Level Start' : 'Set Level Start'}
         </button>
         <button type="button" onClick={onUnplacePhoto} disabled={!selectedPhotoId}>
           Remove From Canvas

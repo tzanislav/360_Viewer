@@ -115,7 +115,67 @@ async function loadProjectLevel(projectId, rawLevelId) {
   return { project, level };
 }
 
+async function clearLevelStartReference(projectId, panophotoId, levelIds = null) {
+  if (!mongoose.isValidObjectId(projectId) || !mongoose.isValidObjectId(panophotoId)) {
+    return;
+  }
+
+  let project;
+
+  try {
+    project = await Project.findById(projectId);
+  } catch (error) {
+    console.error('Failed to load project for level start cleanup:', error);
+    return;
+  }
+
+  if (!project || !Array.isArray(project.levels) || project.levels.length === 0) {
+    return;
+  }
+
+  const targetId = panophotoId.toString();
+  const limitSet = levelIds
+    ? new Set(
+        (Array.isArray(levelIds) ? levelIds : [levelIds])
+          .map((value) => (value && value.toString ? value.toString() : value))
+          .filter(Boolean)
+      )
+    : null;
+
+  let mutated = false;
+
+  project.levels.forEach((level) => {
+    if (!level || !level._id) {
+      return;
+    }
+
+    const levelId = level._id.toString();
+
+    if (limitSet && !limitSet.has(levelId)) {
+      return;
+    }
+
+    if (level.startPanophoto && level.startPanophoto.toString() === targetId) {
+      level.startPanophoto = null;
+      mutated = true;
+    }
+  });
+
+  if (!mutated) {
+    return;
+  }
+
+  project.markModified('levels');
+
+  try {
+    await project.save();
+  } catch (error) {
+    console.error('Failed to clear level start reference:', error);
+  }
+}
+
 module.exports = {
   ensureProjectLevels,
   loadProjectLevel,
+  clearLevelStartReference,
 };

@@ -34,7 +34,6 @@ function ProjectEditor() {
   const [linkSourceId, setLinkSourceId] = useState(null);
   const [isLinkPending, setIsLinkPending] = useState(false);
   const [deletingPhotoIds, setDeletingPhotoIds] = useState([]);
-  const [startPhotoId, setStartPhotoId] = useState(null);
   const canvasRef = useRef(null);
   const [draggingPhotoId, setDraggingPhotoId] = useState(null);
   const dragStateRef = useRef({
@@ -66,15 +65,13 @@ function ProjectEditor() {
     resolvedActiveLevelStartPhotoId,
     storedActiveLevelStartPhotoId,
     isSelectedStoredLevelStart,
-    resolvedStartPhotoId,
-    resolvedStartPhoto,
-    isSelectedStoredStart,
+    firstLevelStartPhotoId,
+    firstLevelStartPhoto,
     levelStartSummary,
   } = useProjectLevelDerivedState({
     activeProject,
     photos,
     selectedPhotoId,
-    startPhotoId,
     activeLevelId,
   });
 
@@ -111,7 +108,6 @@ function ProjectEditor() {
     resolvedBackgroundUrl,
     hasBackgroundImage,
     shouldShowBackground,
-    resolvedCanvasAspectRatio,
     canvasPaddingStyle,
   } = useCanvasBackgroundState({
     activeProject,
@@ -128,17 +124,14 @@ function ProjectEditor() {
 
       if (!response.ok) {
         setActiveProject(null);
-        setStartPhotoId(null);
         return;
       }
 
       const payload = await response.json();
       setActiveProject(payload.project);
-      setStartPhotoId(normalizeId(payload.project?.startPanophoto) || null);
     } catch (error) {
       console.error('Failed to fetch active project:', error);
       setActiveProject(null);
-      setStartPhotoId(null);
     }
   }, [apiBaseUrl]);
 
@@ -173,11 +166,6 @@ function ProjectEditor() {
   useEffect(() => {
     loadActiveProject();
   }, [loadActiveProject]);
-
-  useEffect(() => {
-    const normalizedStartId = normalizeId(activeProject?.startPanophoto);
-    setStartPhotoId(normalizedStartId || null);
-  }, [activeProject]);
 
   useEffect(() => {
     setIsBackgroundVisible(Boolean(resolvedBackgroundUrl));
@@ -474,6 +462,70 @@ function ProjectEditor() {
     }
   }, [activeLevel, activeProject, apiBaseUrl, resolvedActiveLevelId, setActiveProject, setStatusMessage]);
 
+  const handleRemoveLevel = useCallback(async () => {
+    if (!activeProject?._id || !resolvedActiveLevelId) {
+      setStatusMessage({ type: 'error', message: 'Select a level before removing it.' });
+      return;
+    }
+
+    const levelCount = Array.isArray(levels) ? levels.length : 0;
+
+    if (levelCount <= 1) {
+      setStatusMessage({ type: 'error', message: 'Projects must keep at least one level.' });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Removing this level will unplace all photos on it and delete any background image. Continue?'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsLevelRequestPending(true);
+    setStatusMessage(null);
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/api/projects/${activeProject._id}/levels/${resolvedActiveLevelId}`,
+        {
+          method: 'DELETE',
+          credentials: 'include',
+        }
+      );
+
+      if (!response.ok) {
+        const errorBody = await response
+          .json()
+          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
+        throw new Error(errorBody.message || 'Failed to delete level');
+      }
+
+      const payload = await response.json();
+      setActiveProject(payload.project);
+
+      const resolvedNextLevelId = normalizeId(payload.nextLevelId);
+
+      if (resolvedNextLevelId) {
+        setActiveLevelId(resolvedNextLevelId);
+      } else if (Array.isArray(payload.project?.levels) && payload.project.levels.length > 0) {
+        const fallback = payload.project.levels[0];
+        setActiveLevelId(normalizeId(fallback?._id));
+      } else {
+        setActiveLevelId(null);
+      }
+
+      const count = Number.isFinite(payload.unplacedCount) ? payload.unplacedCount : 0;
+      const details = count > 0 ? ` ${count} photo${count === 1 ? '' : 's'} unplaced.` : '';
+      setStatusMessage({ type: 'success', message: `Level removed.${details}` });
+    } catch (error) {
+      setStatusMessage({ type: 'error', message: error.message });
+    } finally {
+      setIsLevelRequestPending(false);
+    }
+  }, [activeProject, apiBaseUrl, levels, resolvedActiveLevelId, setActiveLevelId, setActiveProject, setStatusMessage]);
+
   // createLinkBetweenPhotos links two pano photos via the API and updates state.
   const createLinkBetweenPhotos = useCallback(
     async (sourceId, targetId) => {
@@ -513,51 +565,6 @@ function ProjectEditor() {
     },
     [apiBaseUrl, mergeUpdatedPhotos, photos]
   );
-
-  // handleSetStartPhoto assigns the selected photo as the project's start scene.
-  const handleSetStartPhoto = useCallback(async () => {
-    if (!selectedPhotoId || !activeProject?._id) {
-      setStatusMessage({ type: 'error', message: 'Select a photo before setting the start scene.' });
-      return;
-    }
-
-    if (startPhotoId && selectedPhotoId === startPhotoId) {
-      setStatusMessage({ type: 'info', message: 'This photo is already the start scene.' });
-      return;
-    }
-
-    const selectedLabel = selectedPhoto?.name || 'Photo';
-
-    try {
-      setStatusMessage(null);
-      const response = await fetch(`${apiBaseUrl}/api/projects/${activeProject._id}/start`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ panophotoId: selectedPhotoId }),
-      });
-
-      if (!response.ok) {
-        const errorBody = await response
-          .json()
-          .catch(async () => ({ message: (await response.text()) || 'Unknown error' }));
-        throw new Error(errorBody.message || 'Failed to update start photo');
-      }
-
-      const payload = await response.json();
-      setActiveProject(payload.project);
-      setStartPhotoId(normalizeId(payload.project?.startPanophoto) || null);
-      setStatusMessage({ type: 'success', message: `Set "${selectedLabel}" as the start scene.` });
-    } catch (error) {
-      setStatusMessage({ type: 'error', message: error.message });
-    }
-  }, [
-    activeProject,
-    apiBaseUrl,
-    selectedPhoto,
-    selectedPhotoId,
-    startPhotoId,
-  ]);
 
   const handleSetLevelStartPhoto = useCallback(async () => {
     if (!activeProject?._id || !resolvedActiveLevelId) {
@@ -623,9 +630,8 @@ function ProjectEditor() {
       setActiveProject(payload.project);
       setStatusMessage({
         type: 'success',
-        message: `${isResolvedStartMatch && !storedLevelStartId ? 'Saved' : 'Set'} "${
-          targetPhoto.name || 'Photo'
-        }" as the start for ${activeLevel?.name || 'this level'}.`,
+        message: `${isResolvedStartMatch && !storedLevelStartId ? 'Saved' : 'Set'} "${targetPhoto.name || 'Photo'
+          }" as the start for ${activeLevel?.name || 'this level'}.`,
       });
     } catch (error) {
       setStatusMessage({ type: 'error', message: error.message });
@@ -679,11 +685,11 @@ function ProjectEditor() {
         prev.map((photo) =>
           photo._id === selectedPhotoId
             ? {
-                ...photo,
-                xPosition: nextX,
-                yPosition: nextY,
-                levelId: resolvedActiveLevelId,
-              }
+              ...photo,
+              xPosition: nextX,
+              yPosition: nextY,
+              levelId: resolvedActiveLevelId,
+            }
             : photo
         )
       );
@@ -694,9 +700,8 @@ function ProjectEditor() {
         levelId: currentLevelId,
       }, {
         levelId: resolvedActiveLevelId,
-        successMessage: `Placed "${targetPhoto.name || 'Photo'}" on ${
-          activeLevel?.name || 'the active level'
-        }.`,
+        successMessage: `Placed "${targetPhoto.name || 'Photo'}" on ${activeLevel?.name || 'the active level'
+          }.`,
       });
 
       setLinkSourceId(null);
@@ -743,11 +748,11 @@ function ProjectEditor() {
       prev.map((photo) =>
         photo._id === selectedPhotoId
           ? {
-              ...photo,
-              xPosition: 0,
-              yPosition: 0,
-              levelId: null,
-            }
+            ...photo,
+            xPosition: 0,
+            yPosition: 0,
+            levelId: null,
+          }
           : photo
       )
     );
@@ -830,16 +835,16 @@ function ProjectEditor() {
 
   // handleOpenViewer launches the viewer preloaded with the start scene id.
   const handleOpenViewer = useCallback(() => {
-    if (!resolvedStartPhotoId) {
+    if (!firstLevelStartPhotoId) {
       setStatusMessage({ type: 'error', message: 'Add a pano photo before opening the viewer.' });
       return;
     }
 
     setStatusMessage(null);
-    navigate(`/viewer?id=${resolvedStartPhotoId}`, {
-      state: { panophotoId: resolvedStartPhotoId },
+    navigate(`/viewer?id=${firstLevelStartPhotoId}`, {
+      state: { panophotoId: firstLevelStartPhotoId },
     });
-  }, [navigate, resolvedStartPhotoId]);
+  }, [navigate, firstLevelStartPhotoId]);
 
   // handlePhotoSelect manages selection, link creation flow, and status resets.
   const handlePhotoSelect = useCallback(
@@ -925,10 +930,6 @@ function ProjectEditor() {
             .filter((photo) => photo._id !== photoId)
         );
 
-        if (photoId === startPhotoId) {
-          setStartPhotoId(null);
-        }
-
         if (activeProject?._id) {
           await loadActiveProject();
         }
@@ -955,7 +956,6 @@ function ProjectEditor() {
       loadActiveProject,
       photos,
       selectedPhotoId,
-      startPhotoId,
     ]
   );
 
@@ -1050,7 +1050,7 @@ function ProjectEditor() {
         return false;
       }
 
-  event.stopPropagation();
+      event.stopPropagation();
 
       setSelectedPhotoId((prev) => (prev === photoId ? prev : photoId));
       setStatusMessage(null);
@@ -1090,7 +1090,7 @@ function ProjectEditor() {
         return;
       }
 
-  event.stopPropagation();
+      event.stopPropagation();
 
       const bounds = canvas.getBoundingClientRect();
       const { width, height, left, top } = bounds;
@@ -1221,7 +1221,7 @@ function ProjectEditor() {
             <h1>{activeProject.name}</h1>
             {activeProject.description ? <p>{activeProject.description}</p> : null}
             <p className="project-start-summary">
-              Start photo: {resolvedStartPhoto ? resolvedStartPhoto.name : 'Not set'}
+              Start photo: {firstLevelStartPhoto ? firstLevelStartPhoto.name : 'Not set'}
             </p>
           </div>
           <div className="project-editor-header-actions">
@@ -1229,7 +1229,7 @@ function ProjectEditor() {
               type="button"
               className="project-open-viewer-button"
               onClick={handleOpenViewer}
-              disabled={!resolvedStartPhotoId}
+              disabled={!firstLevelStartPhotoId}
             >
               Open Viewer
             </button>
@@ -1262,19 +1262,7 @@ function ProjectEditor() {
         </section>
 
         <div className="project-editor-body">
-          <ProjectPhotoBrowser
-            photos={photos}
-            selectedPhotoId={selectedPhotoId}
-            resolvedStartPhotoId={resolvedStartPhotoId}
-            linkSourceId={linkSourceId}
-            deletingPhotoIds={deletingPhotoIds}
-            resolvedActiveLevelId={resolvedActiveLevelId}
-            levelNameById={levelNameById}
-            levelStartPhotoIdMap={levelStartPhotoIdMap}
-            onSelectPhoto={handlePhotoSelect}
-            onDeletePhoto={handleDeletePhoto}
-            normalizeId={normalizeId}
-          />
+
 
           <ProjectCanvasPanel
             levels={levels}
@@ -1283,6 +1271,7 @@ function ProjectEditor() {
             onSelectLevel={handleSelectLevel}
             onAddLevel={handleAddLevel}
             onRenameLevel={handleRenameLevel}
+            onRemoveLevel={handleRemoveLevel}
             canvasRef={canvasRef}
             shouldShowBackground={shouldShowBackground}
             resolvedBackgroundUrl={resolvedBackgroundUrl}
@@ -1290,7 +1279,6 @@ function ProjectEditor() {
             onCanvasClick={handleCanvasClick}
             linkLines={linkLines}
             visiblePhotos={visiblePhotos}
-            resolvedStartPhotoId={resolvedStartPhotoId}
             resolvedActiveLevelStartPhotoId={resolvedActiveLevelStartPhotoId}
             selectedPhotoId={selectedPhotoId}
             linkSourceId={linkSourceId}
@@ -1306,14 +1294,24 @@ function ProjectEditor() {
             isSelectedOnActiveLevel={isSelectedOnActiveLevel}
             isLevelStartPending={isLevelStartPending}
             isSelectedStoredLevelStart={isSelectedStoredLevelStart}
-            onSetStartPhoto={handleSetStartPhoto}
-            isSelectedStoredStart={isSelectedStoredStart}
             onUnplacePhoto={handleUnplacePhoto}
             onToggleCanvasLabels={handleToggleCanvasLabels}
             linkingSourcePhoto={linkingSourcePhoto}
             selectedPhoto={selectedPhoto}
             photos={photos}
             onUnlinkPhoto={handleUnlinkPhoto}
+          />
+          <ProjectPhotoBrowser
+            photos={photos}
+            selectedPhotoId={selectedPhotoId}
+            linkSourceId={linkSourceId}
+            deletingPhotoIds={deletingPhotoIds}
+            resolvedActiveLevelId={resolvedActiveLevelId}
+            levelNameById={levelNameById}
+            levelStartPhotoIdMap={levelStartPhotoIdMap}
+            onSelectPhoto={handlePhotoSelect}
+            onDeletePhoto={handleDeletePhoto}
+            normalizeId={normalizeId}
           />
         </div>
 

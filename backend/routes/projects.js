@@ -7,6 +7,7 @@ const { getS3Client } = require('../services/s3Client');
 const Project = require('../models/Project');
 const Panophoto = require('../models/Panophoto');
 const { ensureProjectLevels, loadProjectLevel } = require('../utils/projectLevels');
+const { unplacePanophoto } = require('../utils/unplacePanophoto');
 
 async function ensureStartPanophoto(project) {
   if (!project) {
@@ -595,6 +596,99 @@ router.patch('/:id/levels/:levelId', async (req, res) => {
   }
 
   return res.json({ message: 'Level renamed', project, levelId: level._id });
+});
+
+router.delete('/:id/levels/:levelId', async (req, res) => {
+  const { id, levelId } = req.params;
+
+  const { error, project, level } = await loadProjectLevel(id, levelId);
+
+  if (error) {
+    return res.status(error.status || 500).json({ message: error.message });
+  }
+
+  if (!Array.isArray(project.levels) || project.levels.length <= 1) {
+    return res.status(400).json({ message: 'Projects must keep at least one level' });
+  }
+
+  const levelObjectId = level._id.toString();
+  const removedIndex =
+    typeof level.index === 'number'
+      ? level.index
+      : project.levels.findIndex((item) => item && item._id && item._id.toString() === levelObjectId);
+  const isFirstLevel = removedIndex === 0;
+
+  const panophotosOnLevel = await Panophoto.find({ project: project._id, levelId: level._id });
+  let unplacedCount = 0;
+
+  try {
+    for (const photo of panophotosOnLevel) {
+      await unplacePanophoto(photo);
+      unplacedCount += 1;
+    }
+  } catch (updateError) {
+    console.error('Failed to unplace level panophotos:', updateError);
+    return res.status(500).json({ message: 'Unable to unplace panophotos on this level' });
+  }
+
+  const keysToDelete = new Set();
+  const bucketName = process.env.S3_BUCKET_NAME;
+
+  if (level.backgroundImageS3Key) {
+    keysToDelete.add(level.backgroundImageS3Key);
+  }
+
+  if (isFirstLevel && project.canvasBackgroundImageS3Key) {
+    keysToDelete.add(project.canvasBackgroundImageS3Key);
+  }
+
+  if (bucketName && keysToDelete.size > 0) {
+    const s3Client = getS3Client();
+
+    try {
+      await Promise.all(
+        [...keysToDelete].map((key) =>
+          s3Client.send(
+            new DeleteObjectCommand({
+              Bucket: bucketName,
+              Key: key,
+            })
+          )
+        )
+      );
+    } catch (deleteError) {
+      console.error('Failed to delete level assets from S3:', deleteError);
+      return res.status(502).json({ message: 'Failed to delete level assets from storage' });
+    }
+  }
+
+  project.levels = project.levels.filter((item) => item && item._id && item._id.toString() !== levelObjectId);
+  project.markModified('levels');
+
+  if (isFirstLevel) {
+    project.canvasBackgroundImageUrl = null;
+    project.canvasBackgroundImageS3Key = null;
+  }
+
+  try {
+    await project.save();
+    await ensureProjectLevels(project);
+    await project.populate(projectPopulation);
+  } catch (saveError) {
+    console.error('Failed to delete project level:', saveError);
+    return res.status(500).json({ message: 'Unable to delete level' });
+  }
+
+  const nextLevelIndex = removedIndex < project.levels.length ? removedIndex : project.levels.length - 1;
+  const nextLevel = project.levels[nextLevelIndex] || project.levels[0] || null;
+
+  return res.json({
+    message: 'Level deleted',
+    project,
+    levelId: level._id,
+    nextLevelId: nextLevel?._id || null,
+    unplacedCount,
+  });
 });
 
 module.exports = router;
