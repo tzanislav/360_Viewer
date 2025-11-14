@@ -3,41 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import ProjectCanvasMarker from '../Components/ProjectCanvasMarker';
 import ProjectPhotoBrowser from '../Components/ProjectPhotoBrowser';
 import '../CSS/styles.css';
-
-// normalizeId produces a stable string id from various link reference shapes.
-const normalizeId = (value) => {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  if (!value) {
-    return '';
-  }
-
-  if (typeof value === 'object' && value.target !== undefined) {
-    return normalizeId(value.target);
-  }
-
-  if (typeof value === 'object' && value._id) {
-    if (typeof value._id.toHexString === 'function') {
-      return value._id.toHexString();
-    }
-
-    if (typeof value._id.toString === 'function') {
-      return value._id.toString();
-    }
-  }
-
-  if (typeof value.toHexString === 'function') {
-    return value.toHexString();
-  }
-
-  if (typeof value.toString === 'function') {
-    return value.toString();
-  }
-
-  return '';
-};
+import { normalizeId } from '../utils/panophotoMath';
 
 // clamp01 forces numeric input into the [0, 1] range for canvas coordinates.
 const clamp01 = (value) => {
